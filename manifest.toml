@@ -18,7 +18,7 @@ icon = "appicon.png"
 resources = ["appicon.png"]
 
 [[binary]]
-path = "/applications/Terra.app/entry.elf"
+path = "/system/applications/Terra.app/entry.elf"
 kind = "application"
 requires = [
     "ipc.client",
