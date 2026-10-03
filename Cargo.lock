@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 
 [[package]]
 name = "libloading"
@@ -991,6 +991,7 @@ name = "mochios-appcore"
 version = "0.1.0"
 dependencies = [
  "mochi-user-platform",
+ "mochios-workspace-protocol",
  "viewkit",
 ]
 
