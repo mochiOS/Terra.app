@@ -991,12 +991,32 @@ name = "mochios-appcore"
 version = "0.1.0"
 dependencies = [
  "mochi-user-platform",
+ "mochios-posix-client",
+ "mochios-posix-protocol",
  "mochios-workspace-protocol",
  "viewkit",
 ]
 
 [[package]]
 name = "mochios-capability-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "mochios-filesystem-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "mochios-posix-client"
+version = "0.1.0"
+dependencies = [
+ "mnu-abi",
+ "mochi-user-syscall",
+ "mochios-filesystem-protocol",
+ "mochios-posix-protocol",
+]
+
+[[package]]
+name = "mochios-posix-protocol"
 version = "0.1.0"
 
 [[package]]
