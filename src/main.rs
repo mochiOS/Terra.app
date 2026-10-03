@@ -1,7 +1,6 @@
 use appcore::prelude::*;
 
 struct TerraApp {
-    active_tab: State<usize>,
     address: State<String>,
     bookmarked: State<bool>,
 }
@@ -11,7 +10,6 @@ impl App for TerraApp {
 
     fn new() -> Self {
         Self {
-            active_tab: State::new(0),
             address: State::new(String::new()),
             bookmarked: State::new(false),
         }
@@ -28,19 +26,7 @@ impl App for TerraApp {
         let bookmarked = self.bookmarked.clone();
         let bookmarked_on_click = bookmarked.clone();
 
-        let tab_bar = Toolbar::new(
-            HStack::new()
-                .alignment(StackAlignment::Center)
-                .gap(StackGap::Small)
-                .child(
-                    Tabs::new(self.active_tab.binding())
-                        .item(0, "New Tab")
-                        .accessibility_label("Open tabs"),
-                )
-                .child(Spacer::new()),
-        );
-
-        let navigation_bar = Toolbar::new(
+        let browser_bar = Toolbar::new(
             HStack::new()
                 .alignment(StackAlignment::Center)
                 .gap(StackGap::Small)
@@ -84,9 +70,7 @@ impl App for TerraApp {
                 VStack::new()
                     .alignment(StackAlignment::Stretch)
                     .gap(StackGap::None)
-                    .child(tab_bar)
-                    .child(Divider::new())
-                    .child(navigation_bar)
+                    .child(browser_bar)
                     .child(Divider::new())
                     .child(Surface::app().layout().flex_grow(1.0)),
             ),
