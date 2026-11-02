@@ -58,6 +58,7 @@ struct Core {
     address_bounds: Cell<Option<Rect>>,
     address_ready: Cell<Option<Rect>>,
     buttons: RefCell<BTreeMap<Action, ButtonInteractionState>>,
+    icons: RefCell<BTreeMap<Action, IconButtonInteractionState>>,
     rows: RefCell<BTreeMap<String, ButtonInteractionState>>,
     menu: RefCell<Option<(bool, Rc<MenuButton>)>>,
     last_reveal: Cell<Option<(TabId, u32, usize, bool)>>,
@@ -87,6 +88,19 @@ impl Core {
     fn icon(&self, label: &str, symbol: SymbolName, action: Action) -> Button {
         self.button("", Some(symbol), action)
             .accessibility_label(label)
+    }
+    fn navigation_icon(&self, label: &str, symbol: SymbolName, action: Action) -> IconButton {
+        let interaction = self
+            .icons
+            .borrow_mut()
+            .entry(action.clone())
+            .or_default()
+            .clone();
+        let pending = self.pending.clone();
+        IconButton::with_interaction(symbol, interaction)
+            .size(ButtonSize::Small)
+            .accessibility_label(label)
+            .on_click(move || enqueue(&pending, action.clone()))
     }
     fn more(&self) -> Rc<MenuButton> {
         let reopen = self.browser.borrow().can_reopen();
@@ -335,6 +349,7 @@ impl BrowserView {
             address_bounds: Cell::new(None),
             address_ready: Cell::new(None),
             buttons: RefCell::new(BTreeMap::new()),
+            icons: RefCell::new(BTreeMap::new()),
             rows: RefCell::new(BTreeMap::new()),
             menu: RefCell::new(None),
             last_reveal: Cell::new(None),
@@ -352,10 +367,11 @@ impl BrowserView {
         let t = b.tab();
         let available = self.core.engine.borrow().available();
         let reload = if t.loading {
-            self.core.icon("Stop Loading", SymbolName::X, Action::Stop)
+            self.core
+                .navigation_icon("Stop Loading", SymbolName::X, Action::Stop)
         } else {
             self.core
-                .icon("Reload", SymbolName::Refresh, Action::Reload)
+                .navigation_icon("Reload", SymbolName::Refresh, Action::Reload)
                 .enabled(available && !t.draft.is_empty())
         };
         let bookmarked = t
@@ -365,17 +381,17 @@ impl BrowserView {
         Toolbar::new(
             HStack::new()
                 .alignment(StackAlignment::Center)
-                .gap(StackGap::ExtraSmall)
+                .gap(StackGap::Small)
                 .child(
                     self.core
-                        .icon("Back", SymbolName::ArrowBackward, Action::Back)
+                        .navigation_icon("Back", SymbolName::ArrowBackward, Action::Back)
                         .enabled(available && t.can_back)
                         .layout()
                         .flex_shrink(0.0),
                 )
                 .child(
                     self.core
-                        .icon("Forward", SymbolName::ArrowForward, Action::Forward)
+                        .navigation_icon("Forward", SymbolName::ArrowForward, Action::Forward)
                         .enabled(available && t.can_forward)
                         .layout()
                         .flex_shrink(0.0),
@@ -384,13 +400,13 @@ impl BrowserView {
                 .child(BrowserTabs(self.core.clone()).layout().flex_grow(1.0))
                 .child(
                     self.core
-                        .icon("New Tab (Ctrl+T)", SymbolName::Plus, Action::New)
+                        .navigation_icon("New Tab (Ctrl+T)", SymbolName::Plus, Action::New)
                         .layout()
                         .flex_shrink(0.0),
                 )
                 .child(
                     self.core
-                        .icon(
+                        .navigation_icon(
                             if bookmarked {
                                 "Remove Bookmark"
                             } else {
@@ -1215,6 +1231,68 @@ mod tests {
                 .bounds;
             assert!(close.origin.x > b.size.width * 0.5);
             v.core.perform(Action::ClosePanel);
+        }
+    }
+
+    #[test]
+    fn navigation_icons_keep_equal_targets_and_horizontal_spacing() {
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        for theme in [Theme::LIGHT, Theme::DARK] {
+            for width in [320., 800., 1100.] {
+                for editing in [false, true] {
+                    v.core.editing_address.set(editing);
+                    let (_, nodes) = snapshot(&v, Rect::new(0., 0., width, 480.), &theme);
+                    let buttons: Vec<_> = [
+                        "Back",
+                        "Forward",
+                        "Reload",
+                        "New Tab (Ctrl+T)",
+                        "Bookmark Page",
+                        "More",
+                    ]
+                    .into_iter()
+                    .map(|label| {
+                        nodes
+                            .iter()
+                            .find(|n| {
+                                n.role == AccessibilityRole::Button
+                                    && n.label.as_deref() == Some(label)
+                            })
+                            .unwrap()
+                            .bounds
+                    })
+                    .collect();
+                    for button in &buttons {
+                        assert!(
+                            (button.size.width - theme.layout.compact_control_height).abs() < 0.1
+                        );
+                        assert!((button.size.height - buttons[0].size.height).abs() < 0.1);
+                        assert!((button.origin.y - buttons[0].origin.y).abs() < 0.1);
+                    }
+                    for (a, b) in [(0, 1), (1, 2), (3, 4), (4, 5)] {
+                        let gap = buttons[b].origin.x - buttons[a].origin.x - buttons[a].size.width;
+                        assert!((gap - theme.spacing.small).abs() < 0.1, "gap={gap}");
+                    }
+                    let left = buttons[0].origin.x;
+                    let right = width - buttons[5].origin.x - buttons[5].size.width;
+                    assert!((left - right).abs() < 0.1);
+                    assert!(left >= theme.spacing.small);
+                    let tabs = nodes
+                        .iter()
+                        .find(|n| n.role == AccessibilityRole::Tab)
+                        .unwrap()
+                        .bounds;
+                    assert!(
+                        tabs.origin.x
+                            >= buttons[2].origin.x + buttons[2].size.width + theme.spacing.small
+                                - 0.1
+                    );
+                    assert!(
+                        tabs.origin.x + tabs.size.width
+                            <= buttons[3].origin.x - theme.spacing.small + 0.1
+                    );
+                }
+            }
         }
     }
 
