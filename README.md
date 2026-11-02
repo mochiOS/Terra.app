@@ -7,12 +7,16 @@ it does not fetch data, invent history, or claim a secure connection.
 ## UI
 
 - Standard closable document tabs, horizontal scrolling, and title truncation.
-- Separate address field; HTTP(S), hostnames, ports, IPv6 and IDN normalization.
+- A single compact toolbar: tabs normally show page titles as segments. Clicking
+  the selected title or pressing Ctrl+L expands an inline address editor; Enter
+  navigates and Escape restores the title. More uses the VK Symbols icon menu. There is
+  no File/Edit/View menu strip. HTTP(S), hostnames, ports, IPv6 and IDN normalization.
   Script/file URLs and embedded credentials are rejected. No search provider is
   silently selected; free-text search requires a future provider setting.
 - Back/Forward/Reload/Stop driven by actual engine notifications.
 - Loading progress, engine errors, and engine-reported transport state.
-- Bookmarks and history sidebars; narrow windows show the sidebar on its own.
+- Bookmarks and history open on the right, beside their trigger. Narrow windows
+  show the sidebar on its own.
 - Ctrl+L, Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+R,
   Ctrl+D, Ctrl+B and Ctrl+H. Escape stops an active load.
 - Last-tab closure creates a new blank tab. Reopen uses a fresh engine session.

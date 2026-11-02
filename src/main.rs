@@ -6,7 +6,7 @@ struct TerraApp {
     view: ui::BrowserView,
 }
 impl App for TerraApp {
-    type Body = ApplicationMenuBar<ui::BrowserView>;
+    type Body = ui::BrowserView;
     fn new() -> Self {
         Self {
             view: ui::BrowserView::new(Box::new(engine::Unavailable)),
@@ -19,7 +19,7 @@ impl App for TerraApp {
             .resizable(true)
     }
     fn body(&self, _: &ViewContext) -> Self::Body {
-        self.view.with_menus()
+        self.view.clone()
     }
 }
 fn main() -> Result<(), ViewKitError> {

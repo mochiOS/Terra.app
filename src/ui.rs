@@ -20,6 +20,7 @@ enum Action {
     Close(TabId),
     Reopen,
     Navigate,
+    EditAddress,
     Open(String),
     Back,
     Forward,
@@ -53,11 +54,13 @@ struct Core {
     address: Rc<TextField>,
     address_state: TextFieldInteractionState,
     focus_address: Cell<bool>,
+    editing_address: Cell<bool>,
+    address_bounds: Cell<Option<Rect>>,
     address_ready: Cell<Option<Rect>>,
     buttons: RefCell<BTreeMap<Action, ButtonInteractionState>>,
     rows: RefCell<BTreeMap<String, ButtonInteractionState>>,
-    menu: RefCell<Option<(bool, Rc<Picker>)>>,
-    last_reveal: Cell<Option<(TabId, u32)>>,
+    menu: RefCell<Option<(bool, Rc<MenuButton>)>>,
+    last_reveal: Cell<Option<(TabId, u32, usize, bool)>>,
     panel: Cell<Panel>,
     panel_scroll: ScrollState,
     panel_toolbar: ActionToolbarState<Action>,
@@ -85,14 +88,14 @@ impl Core {
         self.button("", Some(symbol), action)
             .accessibility_label(label)
     }
-    fn more(&self) -> Rc<Picker> {
+    fn more(&self) -> Rc<MenuButton> {
         let reopen = self.browser.borrow().can_reopen();
         if let Some((old, menu)) = self.menu.borrow().as_ref() {
             if *old == reopen {
                 return menu.clone();
             }
         }
-        let mut menu = Picker::new("More").size(ControlSize::Small);
+        let mut menu = MenuButton::new("More", SymbolName::More);
         for (label, action) in [
             ("New Tab", Action::New),
             ("Reopen Closed Tab", Action::Reopen),
@@ -116,6 +119,8 @@ impl Core {
         self.address_state.set_value(b.tab().draft.clone());
     }
     fn focus_address(&self) {
+        self.editing_address.set(true);
+        self.address_bounds.set(None);
         self.focus_address.set(true);
         self.address_ready.set(None);
         self.address_state.set_focused(true);
@@ -212,10 +217,13 @@ impl Core {
                 }
             }
             Action::Navigate => self.perform(Action::Open(self.address_state.value())),
+            Action::EditAddress => self.focus_address(),
             Action::Open(url) => {
                 let request = self.browser.borrow_mut().navigate(&url);
                 match request {
                     Ok(command) => {
+                        self.editing_address.set(false);
+                        self.address_bounds.set(None);
                         self.address_state.set_focused(false);
                         self.focus_address.set(false);
                         self.address_ready.set(None);
@@ -287,6 +295,8 @@ impl Core {
             b.tab().id
         };
         self.lifecycle(Command::Activate(id));
+        self.editing_address.set(false);
+        self.address_bounds.set(None);
         self.address_state.set_focused(false);
         self.focus_address.set(false);
         self.address_ready.set(None);
@@ -307,7 +317,8 @@ impl BrowserView {
         let address = Rc::new(
             TextField::with_interaction(state.clone())
                 .placeholder("Enter a website address")
-                .size(TextFieldSize::Small)
+                .bordered(false)
+                .size(TextFieldSize::Medium)
                 .on_submit(move || enqueue(&submit, Action::Navigate)),
         );
         let core = Rc::new(Core {
@@ -320,6 +331,8 @@ impl BrowserView {
             address,
             address_state: state,
             focus_address: Cell::new(false),
+            editing_address: Cell::new(false),
+            address_bounds: Cell::new(None),
             address_ready: Cell::new(None),
             buttons: RefCell::new(BTreeMap::new()),
             rows: RefCell::new(BTreeMap::new()),
@@ -333,79 +346,6 @@ impl BrowserView {
         core.lifecycle(Command::Create(1));
         core.lifecycle(Command::Activate(1));
         Self { core }
-    }
-    /// Registers ordinary application menus through AppCore.
-    pub fn with_menus(&self) -> ApplicationMenuBar<Self> {
-        let item = |label: &str, action: Action| {
-            let pending = self.core.pending.clone();
-            ApplicationMenuItem::new(label, move || enqueue(&pending, action.clone()))
-        };
-        let close_pending = self.core.pending.clone();
-        let weak = Rc::downgrade(&self.core);
-        ApplicationMenuBar::new(self.clone())
-            .menu(
-                ApplicationMenu::new("File")
-                    .item(
-                        item("New Tab", Action::New).shortcut(MenuShortcut::command('t', "Ctrl+T")),
-                    )
-                    .item(
-                        ApplicationMenuItem::new("Close Tab", move || {
-                            if let Some(core) = weak.upgrade() {
-                                enqueue(
-                                    &close_pending,
-                                    Action::Close(core.browser.borrow().tab().id),
-                                );
-                            }
-                        })
-                        .shortcut(MenuShortcut::command('w', "Ctrl+W")),
-                    )
-                    .item(
-                        item("Reopen Closed Tab", Action::Reopen)
-                            .shortcut(MenuShortcut::command('t', "Ctrl+Shift+T").shift()),
-                    )
-                    .separator()
-                    .item(ApplicationMenuItem::new(
-                        "Close Window",
-                        request_close_key_window,
-                    )),
-            )
-            .menu(ApplicationMenu::standard_edit())
-            .menu(
-                ApplicationMenu::new("View")
-                    .item(item("Reload", Action::Reload))
-                    .item(item("Bookmarks", Action::Bookmarks))
-                    .item(item("History", Action::History)),
-            )
-    }
-    fn tabstrip(&self, theme: &Theme) -> HStack {
-        let b = self.core.browser.borrow();
-        let mut tabs = Tabs::with_interaction(self.core.selected.binding(), self.core.tabs.clone())
-            .document_style()
-            .item_width(theme.layout.tab_width)
-            .accessibility_label("Browser tabs");
-        for (index, tab) in b.tabs.iter().enumerate() {
-            let pending = self.core.pending.clone();
-            let id = tab.id;
-            tabs = tabs.closable_item(index, tab.title(), move || {
-                enqueue(&pending, Action::Close(id))
-            });
-        }
-        HStack::new()
-            .alignment(StackAlignment::Center)
-            .gap(StackGap::ExtraSmall)
-            .child(
-                Scroll::new(self.core.tab_scroll.clone())
-                    .axis(ScrollAxis::Horizontal)
-                    .content(tabs)
-                    .layout()
-                    .flex_grow(1.0),
-            )
-            .child(
-                self.core
-                    .icon("New Tab (Ctrl+T)", SymbolName::Plus, Action::New)
-                    .layout()
-                    .flex_shrink(0.0),
-            )
     }
     fn navigation(&self) -> Toolbar<HStack> {
         let b = self.core.browser.borrow();
@@ -429,15 +369,25 @@ impl BrowserView {
                 .child(
                     self.core
                         .icon("Back", SymbolName::ArrowBackward, Action::Back)
-                        .enabled(available && t.can_back),
+                        .enabled(available && t.can_back)
+                        .layout()
+                        .flex_shrink(0.0),
                 )
                 .child(
                     self.core
                         .icon("Forward", SymbolName::ArrowForward, Action::Forward)
-                        .enabled(available && t.can_forward),
+                        .enabled(available && t.can_forward)
+                        .layout()
+                        .flex_shrink(0.0),
                 )
-                .child(reload)
-                .child(Address(self.core.clone()).layout().flex_grow(1.0))
+                .child(reload.layout().flex_shrink(0.0))
+                .child(BrowserTabs(self.core.clone()).layout().flex_grow(1.0))
+                .child(
+                    self.core
+                        .icon("New Tab (Ctrl+T)", SymbolName::Plus, Action::New)
+                        .layout()
+                        .flex_shrink(0.0),
+                )
                 .child(
                     self.core
                         .icon(
@@ -453,9 +403,11 @@ impl BrowserView {
                             },
                             Action::Bookmark,
                         )
-                        .enabled(t.document.is_some()),
+                        .enabled(t.document.is_some())
+                        .layout()
+                        .flex_shrink(0.0),
                 )
-                .child(self.core.more()),
+                .child(self.core.more().layout().flex_shrink(0.0)),
         )
     }
     fn page(&self) -> Box<dyn View> {
@@ -590,11 +542,6 @@ impl BrowserView {
         let mut layout = VStack::new()
             .alignment(StackAlignment::Stretch)
             .gap(StackGap::None)
-            .child(
-                self.tabstrip(theme)
-                    .height(theme.layout.top_bar_height)
-                    .flex_shrink(0.0),
-            )
             .child(self.navigation().layout().flex_shrink(0.0));
         if self.core.browser.borrow().tab().loading {
             layout = layout.child(
@@ -615,6 +562,7 @@ impl BrowserView {
                 NavigationSplitView::new(self.panel(), self.page())
                     .flexible_sidebar(160., theme.layout.navigation_sidebar_width, 320.)
                     .minimum_detail_width(160.)
+                    .sidebar_placement(SidebarPlacement::Trailing)
                     .layout()
                     .flex_grow(1.0),
             );
@@ -643,13 +591,92 @@ impl BrowserView {
         Surface::app().content(layout)
     }
 }
+struct BrowserTabs(Rc<Core>);
+impl BrowserTabs {
+    fn item_width(&self, available: f32, theme: &Theme) -> f32 {
+        let count = self.0.browser.borrow().tabs.len() as f32;
+        if self.0.editing_address.get() {
+            available
+        } else {
+            (available / count).max(theme.layout.tab_width.min(available))
+        }
+    }
+    fn scroll(&self, available: f32, theme: &Theme) -> Scroll {
+        let browser = self.0.browser.borrow();
+        let mut tabs = Tabs::with_interaction(self.0.selected.binding(), self.0.tabs.clone())
+            .compact_style()
+            .item_width(self.item_width(available, theme))
+            .accessibility_label("Browser tabs");
+        if self.0.editing_address.get() {
+            tabs = tabs.selected_content(Address(self.0.clone()));
+        } else {
+            let pending = self.0.pending.clone();
+            tabs = tabs.on_selected_activate(move || enqueue(&pending, Action::EditAddress));
+        }
+        for (index, tab) in browser.tabs.iter().enumerate() {
+            if self.0.editing_address.get() && index != browser.active {
+                continue;
+            }
+            let pending = self.0.pending.clone();
+            let id = tab.id;
+            tabs = tabs.closable_item(index, tab.title(), move || {
+                enqueue(&pending, Action::Close(id))
+            });
+        }
+        Scroll::new(self.0.tab_scroll.clone())
+            .axis(ScrollAxis::Horizontal)
+            .content(tabs)
+    }
+}
+impl View for BrowserTabs {
+    fn measure(&self, c: Constraints, m: &mut MeasureContext<'_>) -> Size {
+        c.constrain(Size::new(c.maximum.width, m.theme.tabs.height))
+    }
+    fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
+        if b.size.width <= 0.0 || b.size.height <= 0.0 {
+            return;
+        }
+        let browser = self.0.browser.borrow();
+        let key = (
+            browser.tab().id,
+            b.size.width.to_bits(),
+            browser.tabs.len(),
+            self.0.editing_address.get(),
+        );
+        if self.0.last_reveal.get() != Some(key) {
+            let width = self.item_width(b.size.width, c.theme);
+            let left = if self.0.editing_address.get() {
+                0.0
+            } else {
+                browser.active as f32 * width
+            };
+            let offset = self.0.tab_scroll.offset_x();
+            if left < offset {
+                self.0.tab_scroll.set_offset(left, 0.0);
+            } else if left + width > offset + b.size.width {
+                self.0
+                    .tab_scroll
+                    .set_offset((left + width - b.size.width).max(0.0), 0.0);
+            }
+            self.0.last_reveal.set(Some(key));
+        }
+        drop(browser);
+        self.scroll(b.size.width, c.theme).paint(b, c);
+    }
+    fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
+        self.scroll(b.size.width, c.theme()).handle_event(b, e, c)
+    }
+}
+
 struct Address(Rc<Core>);
 impl View for Address {
     fn measure(&self, c: Constraints, m: &mut MeasureContext<'_>) -> Size {
         self.0.address.measure(c, m)
     }
     fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
+        self.0.address_bounds.set(Some(b));
         if self.0.focus_address.get() {
+            self.0.address_state.set_focused(true);
             self.0.address_ready.set(Some(b));
         }
         self.0.address.paint(b, c);
@@ -665,36 +692,25 @@ impl View for BrowserView {
     fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
         self.core.drain();
         self.core.poll(c);
-        let browser = self.core.browser.borrow();
-        let reveal = (browser.tab().id, b.size.width.to_bits());
-        if self.core.last_reveal.get() != Some(reveal) {
-            let button = self
-                .core
-                .icon("New Tab (Ctrl+T)", SymbolName::Plus, Action::New);
-            let size = button.measure(
-                Constraints::loose(b.size),
-                &mut MeasureContext {
-                    theme: c.theme,
-                    typography: c.typography,
-                    text_measurer: c.text_measurer,
-                },
-            );
-            let visible = (b.size.width - size.width - c.theme.spacing.extra_small).max(0.0);
-            let left = browser.active as f32 * c.theme.layout.tab_width;
-            let offset = self.core.tab_scroll.offset_x();
-            if left < offset {
-                self.core.tab_scroll.set_offset(left, 0.);
-            } else if left + c.theme.layout.tab_width > offset + visible {
-                self.core
-                    .tab_scroll
-                    .set_offset((left + c.theme.layout.tab_width - visible).max(0.), 0.);
-            }
-            self.core.last_reveal.set(Some(reveal));
-        }
-        drop(browser);
         self.content(c.theme, b.size.width).paint(b, c);
     }
     fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
+        let outside = matches!(e, ViewEvent::PointerFocusRequested { position }
+            if !self.core.address_bounds.get().is_some_and(|r|r.contains(*position)));
+        if self.core.editing_address.get()
+            && (outside || matches!(e, ViewEvent::FocusChanged { focused: false }))
+        {
+            if let Some(frame) = self.core.address_bounds.get() {
+                self.core.address.handle_event(
+                    frame,
+                    &ViewEvent::KeyboardFocusRequested { bounds: None },
+                    c,
+                );
+            }
+            self.core.editing_address.set(false);
+            self.core.address_bounds.set(None);
+            c.request_redraw();
+        }
         if matches!(
             e,
             ViewEvent::PointerFocusRequested { .. } | ViewEvent::FocusChanged { focused: false }
@@ -713,6 +729,36 @@ impl View for BrowserView {
                 );
                 c.request_keyboard_focus(target);
             }
+        }
+        if matches!(
+            e,
+            ViewEvent::KeyPressed {
+                key: Key::Escape,
+                ..
+            }
+        ) && self.core.editing_address.get()
+        {
+            let url = self
+                .core
+                .browser
+                .borrow()
+                .tab()
+                .document
+                .as_ref()
+                .map(|d| d.url.clone())
+                .unwrap_or_default();
+            self.core.address_state.set_value(url.clone());
+            self.core.address_state.set_focused(false);
+            let mut browser = self.core.browser.borrow_mut();
+            let active = browser.active;
+            browser.tabs[active].draft = url;
+            drop(browser);
+            self.core.editing_address.set(false);
+            self.core.focus_address.set(false);
+            self.core.address_ready.set(None);
+            self.core.address_bounds.set(None);
+            c.request_redraw();
+            return EventResult::Consumed;
         }
         if let ViewEvent::KeyPressed { key, modifiers } = e {
             let action = if modifiers.alt() && !modifiers.shortcut() {
@@ -778,7 +824,16 @@ impl View for BrowserView {
             browser.tabs[active].draft = self.core.address_state.value();
         }
         self.core.select(self.core.selected.get());
+        let editing = self.core.editing_address.get();
         self.core.drain();
+        if !editing && self.core.editing_address.get() {
+            self.content(c.theme(), b.size.width).handle_event(
+                b,
+                &ViewEvent::KeyboardFocusRequested { bounds: None },
+                c,
+            );
+            self.core.address_state.set_focused(true);
+        }
         if result.is_consumed() {
             c.request_redraw();
         }
@@ -970,6 +1025,7 @@ mod tests {
             let v = BrowserView::new(Box::new(crate::engine::Unavailable));
             for width in [320., 640., 1100.] {
                 let b = Rect::new(0., 0., width, 480.);
+                v.core.focus_address();
                 let (_, nodes) = snapshot(&v, b, &theme);
                 let field = nodes
                     .iter()
@@ -1033,7 +1089,7 @@ mod tests {
             },
             &mut c,
         );
-        let request = c.take_context_menu_request().expect("standard Picker menu");
+        let request = c.take_context_menu_request().expect("symbol command menu");
         assert!(
             !request
                 .items
@@ -1055,11 +1111,149 @@ mod tests {
         for _ in 0..8 {
             v.core.perform(Action::New);
         }
+        v.handle_event(
+            b,
+            &ViewEvent::KeyPressed {
+                key: Key::Escape,
+                modifiers: KeyModifiers::default(),
+            },
+            &mut c,
+        );
         snapshot(&v, b, &theme);
         assert!(v.core.tab_scroll.offset_x() > 0.);
         let old = v.core.tab_scroll.offset_x();
         snapshot(&v, b, &theme);
         assert_eq!(v.core.tab_scroll.offset_x(), old);
+    }
+
+    #[test]
+    fn selected_segment_click_expands_the_address_and_escape_restores_the_title() {
+        use appcore::viewkit::platform::{ButtonState, PointerButton};
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        let b = Rect::new(0., 0., 800., 480.);
+        let theme = Theme::LIGHT;
+        let (_, nodes) = snapshot(&v, b, &theme);
+        assert!(!nodes.iter().any(|n| n.role == AccessibilityRole::TextField));
+        let tab = nodes
+            .iter()
+            .find(|n| n.role == AccessibilityRole::Tab && n.selected)
+            .unwrap()
+            .bounds;
+        let mut d = EventDispatcher::new();
+        d.set_accessibility_nodes(&nodes);
+        let mut text = TextMeasurer::new();
+        let mut c = EventContext::new(&theme, &theme.typography, &mut text);
+        d.dispatch(&v, b, &PlatformEvent::Focused(true), &mut c);
+        d.dispatch(
+            &v,
+            b,
+            &PlatformEvent::PointerMoved {
+                x: tab.origin.x + tab.size.width * 0.4,
+                y: tab.origin.y + tab.size.height / 2.,
+            },
+            &mut c,
+        );
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            d.dispatch(
+                &v,
+                b,
+                &PlatformEvent::PointerButton {
+                    button: PointerButton::Primary,
+                    state,
+                },
+                &mut c,
+            );
+        }
+        assert!(v.core.editing_address.get());
+        let (_, nodes) = snapshot(&v, b, &theme);
+        d.set_accessibility_nodes(&nodes);
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| n.role == AccessibilityRole::TextField)
+                .count(),
+            1
+        );
+        d.dispatch(
+            &v,
+            b,
+            &PlatformEvent::TextInput {
+                text: "example.org".into(),
+            },
+            &mut c,
+        );
+        assert_eq!(v.core.address_state.value(), "example.org");
+        d.dispatch(
+            &v,
+            b,
+            &PlatformEvent::KeyPressed {
+                key: Key::Escape,
+                modifiers: KeyModifiers::default(),
+            },
+            &mut c,
+        );
+        assert!(!v.core.editing_address.get());
+        assert!(
+            !snapshot(&v, b, &theme)
+                .1
+                .iter()
+                .any(|n| n.role == AccessibilityRole::TextField)
+        );
+        assert!(v.core.browser.borrow().history.is_empty());
+    }
+    #[test]
+    fn right_hand_actions_open_a_right_hand_sidebar() {
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        let b = Rect::new(0., 0., 1100., 700.);
+        for action in [Action::History, Action::Bookmarks] {
+            v.core.perform(action);
+            let (_, nodes) = snapshot(&v, b, &Theme::LIGHT);
+            let close = nodes
+                .iter()
+                .find(|n| n.label.as_deref() == Some("Close Sidebar"))
+                .unwrap()
+                .bounds;
+            assert!(close.origin.x > b.size.width * 0.5);
+            v.core.perform(Action::ClosePanel);
+        }
+    }
+
+    #[test]
+    fn selected_tab_is_the_only_address_control_and_more_is_symbol_only() {
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        v.core.perform(Action::New);
+        v.core.perform(Action::New);
+        for theme in [Theme::LIGHT, Theme::DARK] {
+            for width in [320., 800., 1100.] {
+                v.core.focus_address();
+                let (list, nodes) = snapshot(&v, Rect::new(0., 0., width, 480.), &theme);
+                let fields: Vec<_> = nodes
+                    .iter()
+                    .filter(|n| n.role == AccessibilityRole::TextField)
+                    .collect();
+                assert_eq!(fields.len(), 1);
+                let tab = nodes
+                    .iter()
+                    .find(|n| n.role == AccessibilityRole::Tab && n.selected)
+                    .unwrap()
+                    .bounds;
+                let field = fields[0].bounds;
+                assert!(
+                    field.origin.x >= tab.origin.x
+                        && field.origin.x + field.size.width <= tab.origin.x + tab.size.width + 0.1
+                );
+                assert!(
+                    field.origin.y >= tab.origin.y
+                        && field.origin.y + field.size.height
+                            <= tab.origin.y + tab.size.height + 0.1
+                );
+                assert!(
+                    nodes.iter().any(|n| n.role == AccessibilityRole::Button
+                        && n.label.as_deref() == Some("More"))
+                );
+                assert!(!list.commands().iter().any(|c|matches!(c,DrawCommand::DrawText{command} if matches!(command.text.as_str(),"File"|"Edit"|"View"|"More"))));
+            }
+        }
     }
 
     #[test]
@@ -1092,6 +1286,10 @@ mod tests {
             &mut c,
         );
         assert_eq!(v.core.address_state.value(), "example.org");
+        assert!(
+            v.core.address_state.is_focused(),
+            "address focus must survive dispatcher reconciliation"
+        );
         d.dispatch(
             &v,
             b,
