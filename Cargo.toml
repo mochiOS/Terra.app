@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 appcore = { package = "mochios-appcore", path = "../../tools/devkit/crates/appcore" }
+url = "2.5.8"
 
 [[bin]]
 name = "terra"
