@@ -140,3 +140,8 @@ the user to the normal release/Get flow. Downloads and package installation use
 the existing verification and package service. Unavailable catalog entries remain
 unavailable; the setup does not claim installation or create a substitute browser.
 A published, signed release and working OS network are needed for a real download.
+
+WebKit source acquisition, environment checks and separate Linux/mochiOS build
+commands are documented in [vendor/README.md](vendor/README.md). Start with
+`python3 tools/webkit.py doctor`; this reports missing requirements without
+installing host packages or changing the SDK.

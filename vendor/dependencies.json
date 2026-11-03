@@ -1,0 +1,48 @@
+{
+  "format": 1,
+  "upstream": "wpewebkit-2.54.2/Source/cmake/OptionsWPE.cmake and Source/ThirdParty/skia/CMakeLists.txt",
+  "note": "Minimum preflight requirements for bootstrap.cmake, not locked dependency source versions. CMake performs the authoritative complete dependency checks.",
+  "pkg_config": {
+    "glib-2.0": "2.70.0",
+    "gio-2.0": "2.70.0",
+    "gio-unix-2.0": "2.70.0",
+    "gmodule-2.0": "2.70.0",
+    "gthread-2.0": "2.70.0",
+    "harfbuzz": "2.7.4",
+    "harfbuzz-icu": "2.7.4",
+    "icu-uc": "70.1",
+    "icu-i18n": "70.1",
+    "libjpeg": "",
+    "epoxy": "1.5.4",
+    "libgcrypt": "1.7.0",
+    "libsoup-3.0": "3.0.0",
+    "libtasn1": "",
+    "xkbcommon": "0.4.0",
+    "libxml-2.0": "2.9.13",
+    "libpng": "",
+    "sqlite3": "",
+    "libwebp": "",
+    "libwebpdemux": "",
+    "zlib": "",
+    "freetype2": "",
+    "fontconfig": "2.13.0",
+    "egl": "",
+    "libwebpmux": "",
+    "expat": ""
+  },
+  "host_tools": [
+    "cmake",
+    "pkg-config",
+    "python3",
+    "perl",
+    "ruby",
+    "bison",
+    "flex",
+    "gperf",
+    "glib-compile-resources"
+  ],
+  "linux_sandbox_tools": [
+    "bwrap",
+    "xdg-dbus-proxy"
+  ]
+}

@@ -5,3 +5,5 @@
 /vendor/build
 
 __pycache__/
+
+/vendor/downloads/
