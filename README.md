@@ -98,7 +98,45 @@ of complete Safari parity or working web access without an engine.
 
 ## Validation / preview
 
-`mmake ui` includes Terra. `mmake preview-terra` launches it independently;
+`mmake ui` includes Terra. `mmake preview-app APP=terra` launches it independently;
 `mmake ui-check` builds the shared preview workspace. Tests use an explicitly
 injected engine adapter to verify routing and failures. Production always uses
 the disconnected backend until a real adapter is supplied.
+
+## Independent mochiOS build and distribution
+
+Terra owns its build entry point and engine dependencies. The OS exports a generic
+SDK and does not build or include Terra in the base image. Linux `mmake ui` still
+discovers Terra for UI development.
+
+Prepare the generic SDK from the OS workspace, then build from this repository:
+
+```sh
+mmake app-sdk
+cd applications/terra
+python3 tools/build.py build --sdk ../../out/newlib-port/sdk/share/app-build.json --shell-only
+```
+
+Package that build using the standard MPKG tool:
+
+```sh
+python3 tools/build.py package --sdk ../../out/newlib-port/sdk/share/app-build.json --shell-only --mpack ../../out/mmake/host-tools/release/mpack
+```
+
+`--binary <ELF>` reuses an existing native build instead of compiling again.
+`out/product/` contains the named `Terra.app` artifact, the digest-bound manifest,
+MPKG payload and `artifacts.json`. `out/Terra.mpkg` is unsigned unless an explicit
+`--msign <tool> --identity <selector>` is supplied. Signing can run separately in
+the release environment; no key or workstation identity is needed for building.
+
+A real engine prefix replaces `--shell-only` with `--engine-prefix <directory>`;
+see [vendor/README.md](vendor/README.md). No engine binary is generated today and
+the browser adapter remains disconnected, even when packaging a supplied library.
+The installed paths are `/applications/Terra.app` and `/libraries/libwebkit.so`.
+
+The built-in App Store owns the initial-application plan. On a session with the
+browser missing, Binder opens its declared setup handler, and App Store directs
+the user to the normal release/Get flow. Downloads and package installation use
+the existing verification and package service. Unavailable catalog entries remain
+unavailable; the setup does not claim installation or create a substitute browser.
+A published, signed release and working OS network are needed for a real download.

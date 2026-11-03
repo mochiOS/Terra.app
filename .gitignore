@@ -1,1 +1,7 @@
 /target
+
+/out
+/vendor/src
+/vendor/build
+
+__pycache__/
