@@ -1,5 +1,6 @@
 mod browser;
 mod engine;
+mod store;
 mod ui;
 use appcore::prelude::*;
 struct TerraApp {
