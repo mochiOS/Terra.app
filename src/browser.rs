@@ -1,12 +1,13 @@
 //! Pure browser session state. No UI callbacks or network operations.
 use crate::engine::{Command, Event, NavigationId, Security, TabId};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 const MAX_TABS: usize = 64;
 const MAX_HISTORY: usize = 200;
 const MAX_CLOSED: usize = 16;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Entry {
     pub url: String,
     pub title: String,
@@ -23,6 +24,12 @@ pub(crate) struct Tab {
     pub can_back: bool,
     pub can_forward: bool,
     pub security: Security,
+    pub pinned: bool,
+    pub group: String,
+    pub zoom: u16,
+    pub find: Option<(u64, usize, usize)>,
+    pub find_pending: bool,
+    pub restore_pending: bool,
 }
 impl Tab {
     fn new(id: TabId) -> Self {
@@ -38,6 +45,12 @@ impl Tab {
             can_back: false,
             can_forward: false,
             security: Security::Unknown,
+            pinned: false,
+            group: "Default".into(),
+            zoom: 100,
+            find: None,
+            find_pending: false,
+            restore_pending: false,
         }
     }
     /// Returns the current engine title or a concise native tab placeholder.
@@ -54,11 +67,71 @@ impl Tab {
     }
 }
 
+/// A transfer offered by the adapter; no filesystem path is trusted from the page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DownloadState {
+    Offered,
+    Active,
+    Finished,
+    Failed(String),
+    Cancelled,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct Download {
+    pub id: u64,
+    pub url: String,
+    pub name: String,
+    pub total: Option<u64>,
+    pub received: u64,
+    pub state: DownloadState,
+}
+/// Search is opt-in; no provider is silently selected and no suggestions are sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SearchProvider {
+    #[default]
+    None,
+    Google,
+    DuckDuckGo,
+    Bing,
+}
+impl SearchProvider {
+    /// User-visible provider name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Address only",
+            Self::Google => "Google",
+            Self::DuckDuckGo => "DuckDuckGo",
+            Self::Bing => "Bing",
+        }
+    }
+    /// Constructs a properly escaped search URL without making a network request.
+    pub fn query(self, input: &str) -> Result<String, String> {
+        let (base, key) = match self {
+            Self::None => {
+                return Err(
+                    "Choose a search provider in Browser Settings to search the web.".into(),
+                );
+            }
+            Self::Google => ("https://www.google.com/search", "q"),
+            Self::DuckDuckGo => ("https://duckduckgo.com/", "q"),
+            Self::Bing => ("https://www.bing.com/search", "q"),
+        };
+        let mut url = Url::parse(base).map_err(|_| "Invalid search provider")?;
+        url.query_pairs_mut().append_pair(key, input);
+        Ok(url.into())
+    }
+}
+
 pub(crate) struct Browser {
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub bookmarks: Vec<Entry>,
     pub history: Vec<Entry>,
+    pub reading_list: Vec<Entry>,
+    pub groups: Vec<String>,
+    pub search: SearchProvider,
+    pub restore_session: bool,
+    pub downloads: Vec<Download>,
     closed: Vec<String>,
     next_tab: u64,
     next_navigation: u64,
@@ -71,6 +144,11 @@ impl Browser {
             active: 0,
             bookmarks: vec![],
             history: vec![],
+            reading_list: vec![],
+            groups: vec!["Default".into()],
+            search: SearchProvider::None,
+            restore_session: true,
+            downloads: vec![],
             closed: vec![],
             next_tab: 2,
             next_navigation: 1,
@@ -90,7 +168,9 @@ impl Browser {
             .next_tab
             .checked_add(1)
             .ok_or("Tab identities are exhausted.")?;
-        self.tabs.push(Tab::new(id));
+        let mut tab = Tab::new(id);
+        tab.group = self.tab().group.clone();
+        self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         Ok(id)
     }
@@ -104,8 +184,12 @@ impl Browser {
         }
         let active_id = self.tab().id;
         let removed = self.tabs.remove(index);
-        if let Some(document) = removed.document {
-            self.closed.push(document.url);
+        if let Some(url) = removed
+            .document
+            .map(|d| d.url)
+            .or_else(|| normalize_address(&removed.draft).ok())
+        {
+            self.closed.push(url);
             if self.closed.len() > MAX_CLOSED {
                 self.closed.remove(0);
             }
@@ -117,7 +201,7 @@ impl Browser {
             .unwrap_or(index.min(self.tabs.len() - 1));
         Ok(())
     }
-    /// Restores the last committed URL, using a new session identity.
+    /// Restores the last closed valid address using a fresh session identity.
     pub fn reopen(&mut self) -> Result<Option<String>, String> {
         if self.closed.is_empty() {
             return Ok(None);
@@ -125,13 +209,160 @@ impl Browser {
         self.new_tab()?;
         Ok(self.closed.pop())
     }
-    /// Whether there is a committed closed page that can be reopened.
+    /// Whether a closed web address is available to reopen.
     pub fn can_reopen(&self) -> bool {
         !self.closed.is_empty()
     }
+    /// Resolves explicit web addresses before optionally using the selected search provider.
+    pub fn resolve_input(&self, input: &str) -> Result<String, String> {
+        let text = input.trim();
+        let address_like = text.contains('.')
+            || text.contains(':')
+            || text.contains('/')
+            || text == "localhost"
+            || text.starts_with('[');
+        if address_like && !text.chars().any(char::is_whitespace) {
+            return normalize_address(text);
+        }
+        if text.is_empty()
+            || text.len() > 8192
+            || text.chars().any(char::is_control)
+            || text.contains("://")
+            || text.contains(':')
+            || text.starts_with("javascript:")
+            || text.starts_with("data:")
+            || text.starts_with("file:")
+        {
+            return Err("Enter a valid HTTP or HTTPS address or search query.".into());
+        }
+        self.search.query(text)
+    }
+    /// Returns visible tab indices in the active group, preserving their stable identities.
+    pub fn visible_tabs(&self) -> Vec<usize> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.group == self.tab().group)
+            .map(|(i, _)| i)
+            .collect()
+    }
+    /// Creates a named local tab group with its own blank tab.
+    pub fn create_group(&mut self, name: &str) -> Result<TabId, String> {
+        let name = name.trim();
+        if name.is_empty()
+            || name.chars().count() > 64
+            || name.chars().any(char::is_control)
+            || self.groups.iter().any(|g| g.eq_ignore_ascii_case(name))
+            || self.groups.len() >= 16
+        {
+            return Err(
+                "Choose a unique tab group name of 1–64 characters (up to 16 groups).".into(),
+            );
+        }
+        let id = self.new_tab()?;
+        self.tabs[self.active].group = name.into();
+        self.groups.push(name.into());
+        Ok(id)
+    }
+    /// Duplicates the active address in a fresh uncommitted session.
+    pub fn duplicate(&mut self) -> Result<TabId, String> {
+        let url = self
+            .tab()
+            .document
+            .as_ref()
+            .map(|e| e.url.clone())
+            .unwrap_or_else(|| self.tab().draft.clone());
+        let zoom = self.tab().zoom;
+        let id = self.new_tab()?;
+        self.tabs[self.active].draft = url;
+        self.tabs[self.active].zoom = zoom;
+        Ok(id)
+    }
+    /// Pins or unpins the active tab and keeps pinned tabs before ordinary tabs.
+    pub fn toggle_pin(&mut self) {
+        let mut tab = self.tabs.remove(self.active);
+        tab.pinned = !tab.pinned;
+        let index = self.tabs.iter().take_while(|t| t.pinned).count();
+        self.tabs.insert(index, tab);
+        self.active = index;
+    }
+    /// Moves within the same pin category, preserving active session identity.
+    pub fn move_tab(&mut self, delta: i8) {
+        let visible = self.visible_tabs();
+        let current = visible.iter().position(|i| *i == self.active).unwrap_or(0);
+        let next = current as isize + delta as isize;
+        if next < 0 || next as usize >= visible.len() {
+            return;
+        }
+        let next = visible[next as usize];
+        if self.tabs[next].pinned != self.tab().pinned {
+            return;
+        }
+        self.tabs.swap(self.active, next);
+        self.active = next;
+    }
+    /// Returns closable peers, excluding pinned tabs and the active tab.
+    pub fn peer_tabs(&self, right_only: bool) -> Vec<TabId> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| {
+                *i != self.active
+                    && !t.pinned
+                    && t.group == self.tab().group
+                    && (!right_only || *i > self.active)
+            })
+            .map(|(_, t)| t.id)
+            .collect()
+    }
+    /// Saves an explicitly supplied web address without pretending it was visited.
+    pub fn add_bookmark(&mut self, title: &str, input: &str) -> Result<(), String> {
+        let url = normalize_address(input)?;
+        let title: String = title
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(512)
+            .collect();
+        let title = if title.trim().is_empty() {
+            url.clone()
+        } else {
+            title
+        };
+        if let Some(entry) = self.bookmarks.iter_mut().find(|e| e.url == url) {
+            entry.title = title;
+        } else {
+            if self.bookmarks.len() >= 1000 {
+                return Err("The bookmark limit has been reached.".into());
+            }
+            self.bookmarks.push(Entry { url, title });
+        }
+        Ok(())
+    }
+    /// Adds/removes the committed page in the reading list without downloading it.
+    pub fn toggle_reading(&mut self) {
+        if let Some(entry) = self.tab().document.clone() {
+            if let Some(i) = self.reading_list.iter().position(|e| e.url == entry.url) {
+                self.reading_list.remove(i);
+            } else if self.reading_list.len() < 1000 {
+                self.reading_list.push(entry);
+            }
+        }
+    }
+    /// Rejects messages from documents that have been replaced or whose tab closed.
+    pub fn has_document(&self, tab: TabId, document: NavigationId) -> bool {
+        document != 0
+            && self
+                .tabs
+                .iter()
+                .any(|t| t.id == tab && t.document_navigation == document)
+    }
+    /// The current committed document generation; zero means no usable document.
+    pub fn document_id(&self) -> NavigationId {
+        self.tab().document_navigation
+    }
     /// Starts a new generation without committing an unvisited page to history.
     pub fn navigate(&mut self, input: &str) -> Result<Command, String> {
-        let url = normalize_address(input)?;
+        let url = self.resolve_input(input)?;
         let (tab, navigation) = self.begin()?;
         self.tabs[self.active].draft = url.clone();
         Ok(Command::Navigate {
@@ -151,6 +382,9 @@ impl Browser {
         t.loading = true;
         t.progress = 0.;
         t.error = None;
+        t.find = None;
+        t.find_pending = false;
+        t.restore_pending = false;
         t.security = Security::Unknown;
         Ok((t.id, navigation))
     }
@@ -188,6 +422,102 @@ impl Browser {
     }
     /// Applies only live, current-generation events. No closed tab can be resurrected.
     pub fn apply(&mut self, event: Event) {
+        match &event {
+            Event::FindResult {
+                tab,
+                document,
+                request,
+                current,
+                total,
+            } => {
+                if *current <= *total {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| {
+                        t.id == *tab
+                            && t.document_navigation == *document
+                            && *document != 0
+                            && t.find.is_some_and(|f| f.0 == *request)
+                    }) {
+                        t.find = Some((*request, *current, *total));
+                        t.find_pending = false;
+                    }
+                }
+                return;
+            }
+            Event::DownloadOffered {
+                id,
+                tab,
+                document,
+                url,
+                name,
+                total,
+            } => {
+                if self.downloads.len() < 100
+                    && !self.downloads.iter().any(|d| d.id == *id)
+                    && self.tabs.iter().any(|t| {
+                        t.id == *tab && t.document_navigation == *document && *document != 0
+                    })
+                    && normalize_address(url).is_ok()
+                {
+                    let name: String = name
+                        .chars()
+                        .filter(|c| !c.is_control() && !matches!(c, '/' | '\\'))
+                        .take(255)
+                        .collect();
+                    self.downloads.push(Download {
+                        id: *id,
+                        url: url.clone(),
+                        name: if name.is_empty() {
+                            "Download".into()
+                        } else {
+                            name
+                        },
+                        total: *total,
+                        received: 0,
+                        state: DownloadState::Offered,
+                    });
+                }
+                return;
+            }
+            Event::DownloadProgress { id, received } => {
+                if let Some(d) = self
+                    .downloads
+                    .iter_mut()
+                    .find(|d| d.id == *id && d.state == DownloadState::Active)
+                {
+                    if *received >= d.received && d.total.is_none_or(|total| *received <= total) {
+                        d.received = *received;
+                    }
+                }
+                return;
+            }
+            Event::DownloadFinished { id } => {
+                if let Some(d) = self
+                    .downloads
+                    .iter_mut()
+                    .find(|d| d.id == *id && d.state == DownloadState::Active)
+                {
+                    d.state = DownloadState::Finished;
+                }
+                return;
+            }
+            Event::DownloadFailed { id, message } => {
+                if let Some(d) = self
+                    .downloads
+                    .iter_mut()
+                    .find(|d| d.id == *id && d.state == DownloadState::Active)
+                {
+                    d.state = DownloadState::Failed(
+                        message
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(2048)
+                            .collect(),
+                    );
+                }
+                return;
+            }
+            _ => {}
+        }
         if let Event::TitleChanged {
             tab,
             document,
@@ -221,6 +551,7 @@ impl Browser {
                 tab, navigation, ..
             } => (*tab, *navigation),
             Event::TitleChanged { .. } => return,
+            _ => return,
         };
         let Some(t) = self
             .tabs
@@ -290,6 +621,7 @@ impl Browser {
                 t.error = Some(message.chars().take(2048).collect());
                 t.security = Security::Unknown;
             }
+            _ => {}
         }
     }
     /// Marks a rejected request as failed without fabricating a commit.
@@ -370,6 +702,146 @@ mod tests {
             can_back: true,
             can_forward: false,
         }
+    }
+    #[test]
+    fn tab_groups_pins_moves_and_peer_closure_preserve_identity() {
+        let mut b = Browser::new();
+        let first = b.tab().id;
+        b.new_tab().unwrap();
+        let second = b.tab().id;
+        b.toggle_pin();
+        assert_eq!(b.tab().id, second);
+        assert!(b.tab().pinned);
+        assert_eq!(b.active, 0);
+        let work = b.create_group("Work").unwrap();
+        b.new_tab().unwrap();
+        let work2 = b.tab().id;
+        assert_eq!(b.visible_tabs().len(), 2);
+        assert!(b.create_group("work").is_err());
+        b.move_tab(-1);
+        assert_eq!(b.tab().id, work2);
+        assert_eq!(b.peer_tabs(false), vec![work]);
+        for id in b.peer_tabs(false) {
+            b.close(id).unwrap();
+        }
+        assert_eq!(b.tab().id, work2);
+        assert!(b.tabs.iter().any(|t| t.id == first));
+        assert!(b.tabs.iter().any(|t| t.id == second));
+        b.tabs[b.active].draft = "https://example.org/".into();
+        let duplicate = b.duplicate().unwrap();
+        assert_ne!(duplicate, work2);
+        assert_eq!(b.tab().group, "Work");
+        assert_eq!(b.tab().draft, "https://example.org/");
+        assert!(b.tab().document.is_none());
+    }
+    #[test]
+    fn searches_are_opt_in_and_escape_queries_instead_of_accepting_unsafe_schemes() {
+        let mut b = Browser::new();
+        assert!(b.resolve_input("mochi desktop").is_err());
+        b.search = SearchProvider::DuckDuckGo;
+        let url = Url::parse(&b.resolve_input("mochi & desktop 日本語").unwrap()).unwrap();
+        assert_eq!(url.host_str(), Some("duckduckgo.com"));
+        assert_eq!(
+            url.query_pairs().next().unwrap().1,
+            "mochi & desktop 日本語"
+        );
+        assert_eq!(
+            b.resolve_input("example.org").unwrap(),
+            "https://example.org/"
+        );
+        for input in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://user:pass@example.org",
+            "data:text/html,a",
+        ] {
+            assert!(b.resolve_input(input).is_err());
+        }
+        assert!(
+            b.resolve_input("singleword")
+                .unwrap()
+                .contains("q=singleword")
+        );
+    }
+    #[test]
+    fn bookmarks_can_be_added_and_renamed_without_visiting_a_page() {
+        let mut b = Browser::new();
+        b.add_bookmark("Docs", "example.org").unwrap();
+        b.add_bookmark("Reference", "https://example.org/").unwrap();
+        assert_eq!(b.bookmarks.len(), 1);
+        assert_eq!(b.bookmarks[0].title, "Reference");
+        assert!(b.history.is_empty());
+        assert!(b.tab().document.is_none());
+        assert!(b.add_bookmark("Bad", "file:///x").is_err());
+    }
+    #[test]
+    fn find_results_and_downloads_reject_stale_or_unaccepted_work() {
+        let mut b = Browser::new();
+        let (tab, document) = request(&mut b, "example.org");
+        b.apply(commit(tab, document, "https://example.org/"));
+        b.tabs[0].find = Some((7, 0, 0));
+        b.tabs[0].find_pending = true;
+        b.apply(Event::FindResult {
+            tab,
+            document,
+            request: 6,
+            current: 1,
+            total: 3,
+        });
+        assert!(b.tab().find_pending);
+        b.apply(Event::FindResult {
+            tab,
+            document,
+            request: 7,
+            current: 2,
+            total: 3,
+        });
+        assert_eq!(b.tab().find, Some((7, 2, 3)));
+        assert!(!b.tab().find_pending);
+        b.apply(Event::DownloadOffered {
+            id: 1,
+            tab,
+            document: document + 1,
+            url: "https://example.org/file".into(),
+            name: "file".into(),
+            total: Some(20),
+        });
+        assert!(b.downloads.is_empty());
+        b.apply(Event::DownloadOffered {
+            id: 1,
+            tab,
+            document,
+            url: "https://example.org/file".into(),
+            name: "../file".into(),
+            total: Some(20),
+        });
+        assert_eq!(b.downloads.len(), 1);
+        assert!(!b.downloads[0].name.contains('/'));
+        b.apply(Event::DownloadFinished { id: 1 });
+        assert_eq!(b.downloads[0].state, DownloadState::Offered);
+        b.downloads[0].state = DownloadState::Active;
+        b.apply(Event::DownloadProgress {
+            id: 1,
+            received: 10,
+        });
+        b.apply(Event::DownloadProgress { id: 1, received: 5 });
+        assert_eq!(b.downloads[0].received, 10);
+        b.downloads[0].state = DownloadState::Cancelled;
+        b.apply(Event::DownloadFinished { id: 1 });
+        b.apply(Event::DownloadProgress {
+            id: 1,
+            received: 20,
+        });
+        assert_eq!(b.downloads[0].state, DownloadState::Cancelled);
+        request(&mut b, "new.example");
+        b.apply(Event::FindResult {
+            tab,
+            document,
+            request: 7,
+            current: 3,
+            total: 3,
+        });
+        assert!(b.tab().find.is_none());
     }
     #[test]
     fn addresses_are_normalized_without_accepting_script_files_credentials_or_search_text() {

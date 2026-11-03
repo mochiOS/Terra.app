@@ -34,6 +34,40 @@ pub(crate) enum Command {
         tab: TabId,
         navigation: NavigationId,
     },
+    /// Changes the current document scale, expressed as a percentage (50–300).
+    SetZoom {
+        tab: TabId,
+        document: NavigationId,
+        percent: u16,
+    },
+    /// Searches the current document; echo the request ID in FindResult.
+    Find {
+        tab: TabId,
+        document: NavigationId,
+        request: u64,
+        text: String,
+        backwards: bool,
+    },
+    /// Removes all page-search highlights for this document.
+    ClearFind {
+        tab: TabId,
+        document: NavigationId,
+    },
+    /// Accepts an offered download. The adapter must obtain a brokered destination;
+    /// filenames and URLs are untrusted and never authorize filesystem access.
+    AcceptDownload(u64),
+    /// Toggles the adapter's reader view for the committed document.
+    ToggleReader {
+        tab: TabId,
+        document: NavigationId,
+    },
+    /// Opens the adapter's native print flow; sending this never means printing succeeded.
+    Print {
+        tab: TabId,
+        document: NavigationId,
+    },
+    /// Cancels an offered or active download; late progress must not restart it.
+    CancelDownload(u64),
 }
 
 /// Transport state reported by the engine, never inferred from an HTTPS URL.
@@ -52,6 +86,44 @@ pub(crate) enum Security {
 /// Report engine history availability rather than reconstructing it in the UI.
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
+    /// Requests a new tab from a committed document. Unsolicited popups are
+    /// blocked by the shell; adapters must attest an actual user gesture.
+    OpenTabRequested {
+        source: TabId,
+        document: NavigationId,
+        url: String,
+        background: bool,
+        user_initiated: bool,
+    },
+    /// Counts are for the matching document and find request only; zero is valid.
+    FindResult {
+        tab: TabId,
+        document: NavigationId,
+        request: u64,
+        current: usize,
+        total: usize,
+    },
+    /// Offers a download without starting transfer or writing any file.
+    DownloadOffered {
+        id: u64,
+        tab: TabId,
+        document: NavigationId,
+        url: String,
+        name: String,
+        total: Option<u64>,
+    },
+    DownloadProgress {
+        id: u64,
+        received: u64,
+    },
+    /// Emit only after the broker-authorized file was successfully written.
+    DownloadFinished {
+        id: u64,
+    },
+    DownloadFailed {
+        id: u64,
+        message: String,
+    },
     /// Updates an already committed document, including after loading finishes.
     TitleChanged {
         tab: TabId,
@@ -87,7 +159,21 @@ pub(crate) enum Event {
 /// ordinary ViewKit input, IME, focus, clipboard and accessibility contracts.
 /// `send` must enqueue work without blocking the UI thread. Events must retain
 /// their original tab/generation, including redirects and late completions.
+/// Optional operations must be explicitly advertised by a connected adapter.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Features {
+    pub find: bool,
+    pub zoom: bool,
+    pub downloads: bool,
+    pub reader: bool,
+    pub printing: bool,
+}
+
 pub(crate) trait Engine {
+    /// Returns only operations actually implemented by this adapter.
+    fn features(&self) -> Features {
+        Features::default()
+    }
     /// Whether an engine has actually been attached to this browser instance.
     fn available(&self) -> bool;
     /// Enqueues an operation, or returns a user-facing failure without success.
