@@ -129,10 +129,10 @@ MPKG payload and `artifacts.json`. `out/Terra.mpkg` is unsigned unless an explic
 `--msign <tool> --identity <selector>` is supplied. Signing can run separately in
 the release environment; no key or workstation identity is needed for building.
 
-A real engine prefix replaces `--shell-only` with `--engine-prefix <directory>`;
-see [vendor/README.md](vendor/README.md). No engine binary is generated today and
-the browser adapter remains disconnected, even when packaging a supplied library.
-The installed paths are `/applications/Terra.app` and `/libraries/libwebkit.so`.
+WebKit is distributed independently by mochiOS/libs. Terra never embeds or
+repackages its engine. `--engine-prefix` is rejected with migration guidance;
+use `--shell-only` while the native adapter is unavailable. Only Terra.app is
+packaged here, and no shell build claims a working browsing engine.
 
 The built-in App Store owns the initial-application plan. On a session with the
 browser missing, Binder opens its declared setup handler, and App Store directs
@@ -141,7 +141,7 @@ the existing verification and package service. Unavailable catalog entries remai
 unavailable; the setup does not claim installation or create a substitute browser.
 A published, signed release and working OS network are needed for a real download.
 
-WebKit source acquisition, environment checks and separate Linux/mochiOS build
-commands are documented in [vendor/README.md](vendor/README.md). Start with
-`python3 tools/webkit.py doctor`; this reports missing requirements without
-installing host packages or changing the SDK.
+WebKit source acquisition and builds are owned by [mochiOS/libs](https://github.com/mochiOS/libs).
+See [vendor/README.md](vendor/README.md). Terra does not invoke the OS build
+system or fetch an engine source tree. The browser adapter remains disconnected
+until a verified mochiOS engine package and native ViewKit backend are available.

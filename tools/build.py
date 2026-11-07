@@ -66,15 +66,7 @@ def stage(binary, output, engine=None):
     """Produce real bundle/payload files and a digest-bound install manifest."""
     elf(binary)
     if engine is not None:
-        metadata = json.loads((engine / 'engine.json').read_text())
-        if metadata.get('format') != 1 or metadata.get('target') != 'mochios-1' or not metadata.get('version'):
-            raise ValueError('Engine metadata must identify an actual mochiOS build')
-        elf(engine / 'libwebkit.so', shared=True)
-        for directory, dirs, files in os.walk(engine, followlinks=False):
-            for name in dirs + files:
-                path = pathlib.Path(directory) / name
-                if path.is_symlink() or not (path.is_dir() or path.is_file()):
-                    raise ValueError(f'Engine input must be a regular file/directory: {path}')
+        raise ValueError('WebKit is an independent mochiOS/libs package; --engine-prefix bundling is no longer supported. Use --shell-only until the native engine adapter is connected.')
     destination = output / 'product'
     temporary = output / 'product.new'
     if temporary.exists():
@@ -86,26 +78,6 @@ def stage(binary, output, engine=None):
     (bundle / 'entry.elf').chmod(0o755)
     (bundle / 'appicon.png').chmod(0o644)
     inputs = [('$/entry.elf', bundle / 'entry.elf', '0755'), ('$/appicon.png', bundle / 'appicon.png', '0644')]
-    if engine is not None:
-        library = temporary / 'payload/root/libraries/libwebkit.so'
-        library.parent.mkdir(parents=True)
-        shutil.copy2(engine / 'libwebkit.so', library)
-        library.chmod(0o644)
-        inputs.append(('/libraries/libwebkit.so', library, '0644'))
-        runtime = engine / 'runtime'
-        if runtime.exists():
-            for path in sorted(runtime.rglob('*')):
-                if path.is_file():
-                    with path.open('rb') as stream:
-                        magic = stream.read(4)
-                    if path.stat().st_mode & 0o111 or magic == b'\x7fELF':
-                        raise ValueError(f'Runtime code requires explicit binary declarations; only resources are supported here: {path}')
-                    relative = path.relative_to(runtime)
-                    target = temporary / 'payload/root/libraries/webkit' / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(path, target)
-                    target.chmod(0o644)
-                    inputs.append(('/libraries/webkit/' + relative.as_posix(), target, '0644'))
     config = tomllib.loads((ROOT / 'manifest.toml').read_text())
     package = config['package']; app = config['application']
     text = 'format = 1\n\n[package]\n'
@@ -117,13 +89,11 @@ def stage(binary, output, engine=None):
     for index, (target, path, mode) in enumerate(inputs):
         text += f'\n[[file]]\nid = "f{index}"\npath = {json.dumps(target)}\ndigest = "sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"\nsize = {path.stat().st_size}\nmode = "{mode}"\n'
     text += '\n[[binary]]\npath = "/applications/Terra.app/entry.elf"\nfile = "f0"\nkind = "application"\nrequires = ' + json.dumps(config['binary'][0]['requires']) + '\n'
-    if engine is not None:
-        text += '\n[[binary]]\npath = "/libraries/libwebkit.so"\nfile = "f2"\nkind = "library"\nrequires = []\n'
     (temporary / 'manifest.toml').write_text(text)
     # Keep a named application artifact as well as the standard MPKG payload.
     shutil.copytree(bundle, temporary / 'Terra.app')
     (temporary / 'Terra.app/manifest.toml').write_text(text)
-    report = dict(format=1, shell_only=engine is None, engine_adapter_connected=False,
+    report = dict(format=1, shell_only=True, engine_adapter_connected=False,
                   files=[dict(path=target, sha256=hashlib.sha256(path.read_bytes()).hexdigest(), size=path.stat().st_size) for target, path, _ in inputs])
     (temporary / 'artifacts.json').write_text(json.dumps(report, indent=2) + '\n')
     if destination.exists():
