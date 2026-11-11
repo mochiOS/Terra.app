@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import struct
 import subprocess
@@ -30,7 +31,50 @@ def elf(path, shared=False):
         raise ValueError(f'Unexpected ELF type {kind}: {path}')
 
 
-def build(sdk_file, output):
+def engine_rustflags(sdk, shared_sdk, prefix):
+    """Use the shared SDK as the sole final linker, preserving source remapping."""
+    if shared_sdk is None:
+        raise ValueError('A shared C/C++ SDK is required')
+    compiler = shared_sdk / 'bin/mochios-c++'
+    if not compiler.is_file():
+        raise ValueError('A real shared C/C++ SDK is required for the engine build')
+    library = prefix / 'usr/lib/libwebkit.so'
+    elf(library, shared=True)
+    flags = []; source = iter(sdk['rustflags'])
+    for flag in source:
+        if flag == '-C':
+            value = next(source)
+            if value.startswith(('linker=', 'link-arg=')):
+                continue
+            flags += [flag, value]
+        elif not flag.startswith(('-Clinker=', '-Clink-arg=')):
+            flags.append(flag)
+    flags += ['-C', 'target-feature=-crt-static', '-C', 'linker=' + str(compiler), '-C', 'link-arg=-L' + str(prefix / 'usr/lib'),
+              '-C', 'link-arg=-Wl,-rpath-link,' + str(prefix / 'usr/lib')]
+    return flags
+
+
+def engine_dependency(path):
+    """Read explicit package identity; never invent a publisher or signing key."""
+    data = tomllib.loads(path.read_text())
+    fields = {'package', 'developer', 'subject_key_id', 'provenance', 'abi'}
+    if set(data) != fields or any(not isinstance(v, str) or not v for v in data.values()):
+        raise ValueError('Engine dependency requires the five native library identity fields')
+    if not re.fullmatch('[0-9a-fA-F]{64}', data['subject_key_id']):
+        raise ValueError('Engine dependency subject_key_id must be 64 hex digits')
+    if data['provenance'] not in {'built-in', 'verified-package', 'development'}:
+        raise ValueError('Invalid engine dependency provenance')
+    return data
+
+
+def has_engine_dependency(binary):
+    """Inspect DT_NEEDED without executing the native program."""
+    dynamic = subprocess.run(['readelf', '-d', str(binary)], check=True,
+                             text=True, capture_output=True).stdout
+    return bool(re.search(r'\(NEEDED\).*\[libwebkit\.so\.1\]', dynamic))
+
+
+def build(sdk_file, output, shared_sdk=None, webkit_prefix=None):
     """Compile against SDK metadata, without invoking the OS build system."""
     sdk = json.loads(sdk_file.read_text())
     if sdk.get('format') != 1:
@@ -50,23 +94,31 @@ def build(sdk_file, output):
     shutil.copy2(ROOT / 'Cargo.lock', staging / 'Cargo.lock')
     env = os.environ.copy()
     env.update(sdk.get('versions', {})); env.update(sdk['fonts'])
-    env.update(RUSTC=sdk['rustc'], RUSTDOC=sdk['rustdoc'], CARGO_ENCODED_RUSTFLAGS='\x1f'.join(sdk['rustflags']))
+    flags = engine_rustflags(sdk, shared_sdk, webkit_prefix) if webkit_prefix else sdk['rustflags']
+    env.update(RUSTC=sdk['rustc'], RUSTDOC=sdk['rustdoc'], CARGO_ENCODED_RUSTFLAGS='\x1f'.join(flags))
     env.pop('RUSTFLAGS', None)
     args = [sdk['cargo'], 'build', '--offline', '-Z', 'build-std=std,panic_abort,compiler_builtins', '-Z', 'json-target-spec']
     for config in sdk['cargo_config']:
         args += ['--config', config]
     args += ['--release', '--target', sdk['target'], '--target-dir', sdk['target_dir'], '--manifest-path', staging / 'Cargo.toml', '--bin', 'terra']
+    if webkit_prefix:
+        args += ['--features', 'webkit-engine']
     run(args, env=env, cwd=staging)
     binary = pathlib.Path(sdk['target_dir']) / pathlib.Path(sdk['target']).stem / 'release/terra'
     elf(binary)
     return binary
 
 
-def stage(binary, output, engine=None):
+def stage(binary, output, engine=None, *, engine_linked=False, dependency=None):
     """Produce real bundle/payload files and a digest-bound install manifest."""
     elf(binary)
     if engine is not None:
         raise ValueError('WebKit is an independent mochiOS/libs package; --engine-prefix bundling is no longer supported. Use --shell-only until the native engine adapter is connected.')
+    linked = has_engine_dependency(binary)
+    if linked != engine_linked:
+        raise ValueError('ELF engine dependency does not match the requested shell/engine build mode')
+    if engine_linked and dependency is None:
+        raise ValueError('A reviewed native engine package identity is required')
     destination = output / 'product'
     temporary = output / 'product.new'
     if temporary.exists():
@@ -88,12 +140,19 @@ def stage(binary, output, engine=None):
         text += f'{key} = {json.dumps(app[key])}\n'
     for index, (target, path, mode) in enumerate(inputs):
         text += f'\n[[file]]\nid = "f{index}"\npath = {json.dumps(target)}\ndigest = "sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"\nsize = {path.stat().st_size}\nmode = "{mode}"\n'
-    text += '\n[[binary]]\npath = "/applications/Terra.app/entry.elf"\nfile = "f0"\nkind = "application"\nrequires = ' + json.dumps(config['binary'][0]['requires']) + '\n'
+    requirements = list(config['binary'][0]['requires'])
+    if engine_linked and 'process.spawn' not in requirements:
+        requirements.append('process.spawn')
+    text += '\n[[binary]]\npath = "/applications/Terra.app/entry.elf"\nfile = "f0"\nkind = "application"\nrequires = ' + json.dumps(requirements) + '\n'
+    if engine_linked:
+        text += '\n[[library_dependency]]\n'
+        for key in ['package', 'developer', 'subject_key_id', 'provenance', 'abi']:
+            text += key + ' = ' + json.dumps(dependency[key]) + '\n'
     (temporary / 'manifest.toml').write_text(text)
     # Keep a named application artifact as well as the standard MPKG payload.
     shutil.copytree(bundle, temporary / 'Terra.app')
     (temporary / 'Terra.app/manifest.toml').write_text(text)
-    report = dict(format=1, shell_only=True, engine_adapter_connected=False,
+    report = dict(format=1, shell_only=not engine_linked, engine_adapter_connected=False, engine_adapter_linked=engine_linked, runtime_tested=False,
                   files=[dict(path=target, sha256=hashlib.sha256(path.read_bytes()).hexdigest(), size=path.stat().st_size) for target, path, _ in inputs])
     (temporary / 'artifacts.json').write_text(json.dumps(report, indent=2) + '\n')
     if destination.exists():
@@ -123,6 +182,9 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--shell-only', action='store_true')
     mode.add_argument('--engine-prefix', type=pathlib.Path)
+    mode.add_argument('--webkit-prefix', type=pathlib.Path, help='Compile/link against a separately installed native WebKit prefix; never bundle it')
+    parser.add_argument('--shared-sdk', type=pathlib.Path, help='Shared C/C++ SDK used for final linking')
+    parser.add_argument('--engine-dependency', type=pathlib.Path, help='Reviewed library_dependency identity as a TOML file')
     parser.add_argument('--mpack', type=pathlib.Path)
     parser.add_argument('--msign', type=pathlib.Path)
     parser.add_argument('--identity')
@@ -131,9 +193,11 @@ def main():
         parser.error('--sdk is required to compile; --binary accepts an already-built ELF')
     if args.command == 'package' and args.mpack is None:
         parser.error('--mpack is required for package generation')
+    if args.webkit_prefix and (args.shared_sdk is None or args.engine_dependency is None):
+        parser.error('--webkit-prefix requires --shared-sdk and --engine-dependency')
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
-    binary = args.binary.resolve() if args.binary else build(args.sdk.resolve(), args.output)
-    product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None)
+    binary = args.binary.resolve() if args.binary else build(args.sdk.resolve(), args.output, args.shared_sdk.resolve() if args.shared_sdk else None, args.webkit_prefix.resolve() if args.webkit_prefix else None)
+    product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None, engine_linked=bool(args.webkit_prefix), dependency=engine_dependency(args.engine_dependency) if args.engine_dependency else None)
     if args.command == 'package':
         package(product, args.output, args.mpack.resolve(), args.msign.resolve() if args.msign else None, args.identity)
     print(product)

@@ -1177,6 +1177,7 @@ dependencies = [
  "mochios-capability-protocol",
  "mochios-package-manifest",
  "mochios-workspace-protocol",
+ "zeroize",
 ]
 
 [[package]]
@@ -1198,6 +1199,7 @@ dependencies = [
  "mochios-posix-client",
  "mochios-posix-protocol",
  "mochios-workspace-protocol",
+ "serde_json",
  "toml",
  "viewkit",
  "zeroize",
@@ -1246,6 +1248,7 @@ dependencies = [
  "mochios-filesystem-protocol",
  "mochios-net-device-protocol",
  "mochios-posix-protocol",
+ "sha2",
 ]
 
 [[package]]
@@ -2598,9 +2601,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ui_layout"
-version = "0.9.8"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe00a83f195b147e7ea8a2b9abc08b9b3ca043e7fcca996bd7a980174438fb1b"
+checksum = "afbdfab90b0052416a13fa78be0f151f5bb6480242601b97e76207f58e8761b0"
 
 [[package]]
 name = "unicode-bidi"
@@ -3557,15 +3560,11 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "mboot-protocol"
-version = "0.1.0"
-
-[[patch.unused]]
 name = "mnu"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "mochios-mdriver-protocol"
+name = "mboot-protocol"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -3594,4 +3593,8 @@ version = "0.1.0"
 
 [[patch.unused]]
 name = "mochios-virtio-gpu-protocol"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "bootui"
 version = "0.1.0"

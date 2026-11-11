@@ -6,6 +6,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+# Requires a separately installed native engine and its reviewed startup graph.
+webkit-engine = []
+
 [dependencies]
 appcore = { package = "mochios-appcore", path = "../../tools/devkit/crates/appcore" }
 url = "2.5.8"

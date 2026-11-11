@@ -10,7 +10,7 @@ impl App for TerraApp {
     type Body = ui::BrowserView;
     fn new() -> Self {
         Self {
-            view: ui::BrowserView::persistent(Box::new(engine::Unavailable)),
+            view: ui::BrowserView::persistent(engine::connect()),
         }
     }
     fn window(&self) -> WindowOptions {

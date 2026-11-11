@@ -1,8 +1,10 @@
 # Terra
 
-Native browser chrome built with AppCore and ViewKit. **No web engine is shipped
-or simulated.** Libraries, tabs and settings work without one; web pages, page
-search, zoom, Reader, printing and transfers need a connected adapter.
+Native browser chrome built with AppCore and ViewKit. WebKit is a separately
+installed library, never embedded in Terra. The optional `webkit-engine` native
+build connects the major-1 `libwebkit.so.1` ABI. Default and Linux previews remain
+shell-only. The native connection has contract tests; mochiOS process/rendering
+validation is still pending, so this is not a claim of working web access yet.
 
 ## Browser features
 
@@ -66,7 +68,25 @@ network or privileged storage right is added.
 ## Engine adapter contract
 
 The browser-specific boundary is `src/engine.rs`, inside Terra, not AppCore.
-Replace `engine::Unavailable` in `TerraApp::new()` with an `Engine` implementation.
+`engine::connect()` selects the native client only in a mochiOS build with
+`webkit-engine`. `src/engine/native.rs` owns the worker, navigation IDs and ViewKit
+page adapter; `abi.rs` mirrors the reviewed C layout. All engine calls occur on
+one worker thread. Painting reads retained immutable frames and records the next
+viewport size; it never dispatches WebKit or waits for rendering.
+
+The initial adapter supports navigation, history commands, zoom, pointer/scroll,
+committed text and basic keyboard input. Find, Reader, printing, downloads, page
+accessibility and full IME composition are not advertised. TLS status remains
+Unknown until the engine provides validated transport information. No HTTPS
+padlock is inferred from an address. Unsupported operations return errors.
+
+`terra:///engine-check` is the sole local test address. Its bundled UTF-8 HTML is
+sent through the host-only Load HTML command with an opaque origin; no arbitrary
+`file:` URL or filesystem privilege is introduced. It contains a text input, a
+JavaScript button and a scrolling document for testing in Terra itself.
+
+The engine is startup-linked, not dlopened after startup: WPE/Epoxy dependencies
+use initial-exec TLS and require the normal authenticated initial ELF graph.
 
 1. `Create`, `Activate`, `Close` manage retained page sessions. Closed tab IDs
    must never be reused. Dispose all sessions when the adapter drops.
@@ -100,8 +120,8 @@ of complete Safari parity or working web access without an engine.
 
 `mmake ui` includes Terra. `mmake preview-app APP=terra` launches it independently;
 `mmake ui-check` builds the shared preview workspace. Tests use an explicitly
-injected engine adapter to verify routing and failures. Production always uses
-the disconnected backend until a real adapter is supplied.
+injected engine adapter to verify routing and failures. Default builds use the disconnected backend. A native feature build requires the
+independent engine package and a compatible shared SDK.
 
 ## Independent mochiOS build and distribution
 
@@ -143,5 +163,24 @@ A published, signed release and working OS network are needed for a real downloa
 
 WebKit source acquisition and builds are owned by [mochiOS/libs](https://github.com/mochiOS/libs).
 See [vendor/README.md](vendor/README.md). Terra does not invoke the OS build
-system or fetch an engine source tree. The browser adapter remains disconnected
-until a verified mochiOS engine package and native ViewKit backend are available.
+system or fetch an engine source tree. The native adapter is implemented, but the independently installed engine package,
+helper Capability declarations and mochiOS runtime validation are still required.
+
+A native engine build uses an independently installed prefix and shared SDK:
+
+```sh
+python3 tools/build.py build --sdk /path/to/rust-sdk/share/app-build.json \
+  --webkit-prefix /path/to/verified-engine-prefix \
+  --shared-sdk /path/to/shared-cxx-sdk \
+  --engine-dependency /path/to/reviewed-engine-identity.toml
+```
+
+The identity file contains the five existing `library_dependency` fields:
+`package`, `developer`, `subject_key_id`, `provenance`, `abi`. Use the actual
+installed engine package identity; no example signing identity is assumed.
+The build replaces static final-link flags with the shared SDK driver, while
+preserving source path remapping. Packaging inspects the real ELF DT_NEEDED:
+a shell cannot be labeled engine-connected, and an engine-linked binary cannot
+be packaged as a shell to omit its library authorization. Engine assets are
+never copied into Terra. These build options still require native link/runtime
+validation before release. No release or signing operation is performed by build.

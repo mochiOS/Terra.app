@@ -39,3 +39,42 @@ class Packaging(unittest.TestCase):
                 self.assertFalse((root/'out/product').exists())
 
 if __name__=='__main__':unittest.main()
+
+class NativeEngineBuild(unittest.TestCase):
+    def test_final_linker_replaces_static_sdk_flags_without_losing_remapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp); shared=root/'sdk'; prefix=root/'deps'
+            (shared/'bin').mkdir(parents=True); (shared/'bin/mochios-c++').write_text('test compiler identity')
+            (prefix/'usr/lib').mkdir(parents=True); write_elf(prefix/'usr/lib/libwebkit.so',3)
+            flags=module.engine_rustflags({'rustflags':['--remap-path-prefix','/private=/src','-C','linker=old','-C','link-arg=-static','-C','panic=abort']},shared,prefix)
+            self.assertIn('/private=/src',flags); self.assertIn('panic=abort',flags)
+            self.assertNotIn('linker=old',flags);self.assertNotIn('link-arg=-static',flags)
+            self.assertIn('linker='+str(shared/'bin/mochios-c++'),flags)
+            self.assertFalse(any('rpath=' in f for f in flags))
+    def test_engine_identity_cannot_default_to_an_unreviewed_publisher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=pathlib.Path(tmp)/'engine.toml';p.write_text('package="org.example.webkit"\n')
+            with self.assertRaisesRegex(ValueError,'five'): module.engine_dependency(p)
+    def test_shell_mode_rejects_a_real_engine_dependency(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);binary=root/'entry';write_elf(binary)
+            with patch.object(module,'has_engine_dependency',return_value=True):
+                with self.assertRaisesRegex(ValueError,'does not match'):module.stage(binary,root)
+            self.assertFalse((root/'product').exists())
+
+class NativePackageIdentity(unittest.TestCase):
+    def test_native_package_records_identity_and_only_parent_spawn_authority(self):
+        from unittest.mock import patch
+        identity=dict(package='org.example.engine',developer='org.example.publisher',subject_key_id='a'*64,provenance='development',abi='example-1')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp);binary=root/'entry';write_elf(binary)
+            with patch.object(module,'has_engine_dependency',return_value=True):
+                product=module.stage(binary,root,engine_linked=True,dependency=identity)
+            manifest=module.tomllib.loads((product/'manifest.toml').read_text())
+            self.assertEqual(manifest['library_dependency'],[identity])
+            self.assertIn('process.spawn',manifest['binary'][0]['requires'])
+            self.assertNotIn('net.connect',manifest['binary'][0]['requires'])
+            report=json.loads((product/'artifacts.json').read_text())
+            self.assertTrue(report['engine_adapter_linked']);self.assertFalse(report['runtime_tested'])
+            self.assertFalse(report['engine_adapter_connected'])

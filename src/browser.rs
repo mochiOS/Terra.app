@@ -649,6 +649,9 @@ impl Browser {
 /// Search is deliberately not invented without a configured provider.
 pub(crate) fn normalize_address(input: &str) -> Result<String, String> {
     let input = input.trim();
+    if input == "terra:///engine-check" {
+        return Ok(input.into());
+    }
     if input.is_empty()
         || input.len() > 8192
         || input.chars().any(|c| c.is_whitespace() || c.is_control())

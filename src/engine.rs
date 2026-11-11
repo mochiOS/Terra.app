@@ -207,3 +207,38 @@ impl Engine for Unavailable {
         None
     }
 }
+
+#[cfg(any(test, all(target_os = "mochios", feature = "webkit-engine")))]
+mod abi;
+#[cfg(any(test, all(target_os = "mochios", feature = "webkit-engine")))]
+mod native;
+
+/// Selects the startup-linked native engine; host previews remain shell-only.
+/// Initial-exec TLS dependencies must be in the authenticated startup ELF graph,
+/// so this deliberately does not dlopen WebKit after process startup.
+pub(crate) fn connect() -> Box<dyn Engine> {
+    #[cfg(all(target_os = "mochios", feature = "webkit-engine"))]
+    {
+        #[link(name = "webkit")]
+        unsafe extern "C" {
+            fn mwk_get_api(major: u32, size: usize, output: *mut *const abi::Api) -> u32;
+        }
+        let mut table = std::ptr::null();
+        // SAFETY: negotiation returns a library-owned immutable table. Validate
+        // its prefix before dereferencing the complete function table.
+        let result = unsafe { mwk_get_api(1, size_of::<abi::Api>(), &mut table) };
+        if result == 0 && !table.is_null() {
+            let prefix = table.cast::<u32>();
+            if unsafe { *prefix } as usize >= size_of::<abi::Api>()
+                && unsafe { *prefix.add(1) } == 1
+            {
+                match native::Native::start(unsafe { &*table }) {
+                    Ok(engine) => return Box::new(engine),
+                    Err(error) => eprintln!("Terra: {error}"),
+                }
+            }
+        }
+        eprintln!("Terra: WebKit ABI negotiation failed (status {result}).");
+    }
+    Box::new(Unavailable)
+}
