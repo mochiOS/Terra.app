@@ -184,3 +184,21 @@ a shell cannot be labeled engine-connected, and an engine-linked binary cannot
 be packaged as a shell to omit its library authorization. Engine assets are
 never copied into Terra. These build options still require native link/runtime
 validation before release. No release or signing operation is performed by build.
+
+The engine-linked package also declares `webkit-web-process` and
+`webkit-network-process` executable dependencies against that same reviewed
+publisher/key/provenance/ABI. Their exports are `web-process` and
+`network-process`. Process creation uses AppCore signed executable references;
+there is no `PATH` fallback. The engine worker delegates the socket as FD 3,
+retains native Child handles, reaps exits, and stops owned helpers at shutdown.
+Private engine DSOs use `/libraries/org.mochios.webkit`. Shell builds retain
+their original capability requirements. The engine-linked parent's capability
+ceiling includes network/tmp/time/random needed by its declared helper subsets;
+the Web helper itself receives no `net.connect` capability.
+
+The provisional C ABI requires feature bit 8 (host-owned helper launch). Older
+engine artifacts are explicitly rejected, rather than using unsafe legacy
+helper spawning. The complete updated engine and final Terra link must be built
+before testing `terra:///engine-check`; a successful headless IPC fixture does
+not establish HTML rendering. Fonts and other non-code runtime assets still
+require reviewed delegation before production distribution.

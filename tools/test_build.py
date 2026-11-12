@@ -74,7 +74,12 @@ class NativePackageIdentity(unittest.TestCase):
             manifest=module.tomllib.loads((product/'manifest.toml').read_text())
             self.assertEqual(manifest['library_dependency'],[identity])
             self.assertIn('process.spawn',manifest['binary'][0]['requires'])
-            self.assertNotIn('net.connect',manifest['binary'][0]['requires'])
+            self.assertIn('net.connect',manifest['binary'][0]['requires'])
+            self.assertNotIn('fs.read.all',manifest['binary'][0]['requires'])
+            self.assertEqual(manifest['binary'][0]['executable_dependencies'],['webkit-web-process','webkit-network-process'])
+            for helper in manifest['executable_dependency']:
+                self.assertEqual({k: helper[k] for k in identity}, identity)
+            self.assertEqual([h['export'] for h in manifest['executable_dependency']],['web-process','network-process'])
             report=json.loads((product/'artifacts.json').read_text())
             self.assertTrue(report['engine_adapter_linked']);self.assertFalse(report['runtime_tested'])
             self.assertFalse(report['engine_adapter_connected'])

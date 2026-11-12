@@ -141,9 +141,19 @@ def stage(binary, output, engine=None, *, engine_linked=False, dependency=None):
     for index, (target, path, mode) in enumerate(inputs):
         text += f'\n[[file]]\nid = "f{index}"\npath = {json.dumps(target)}\ndigest = "sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"\nsize = {path.stat().st_size}\nmode = "{mode}"\n'
     requirements = list(config['binary'][0]['requires'])
-    if engine_linked and 'process.spawn' not in requirements:
-        requirements.append('process.spawn')
+    if engine_linked:
+        # Parent ceiling only: the signed helpers still declare their own subset.
+        for capability in ['process.spawn', 'system.random.read', 'system.time.read',
+                           'fs.read.tmp', 'fs.write.tmp', 'net.connect']:
+            if capability not in requirements:
+                requirements.append(capability)
     text += '\n[[binary]]\npath = "/applications/Terra.app/entry.elf"\nfile = "f0"\nkind = "application"\nrequires = ' + json.dumps(requirements) + '\n'
+    if engine_linked:
+        text += 'executable_dependencies = [\"webkit-web-process\", \"webkit-network-process\"]\n'
+        for alias, export in [('webkit-web-process', 'web-process'), ('webkit-network-process', 'network-process')]:
+            text += '\n[[executable_dependency]]\nalias = ' + json.dumps(alias) + '\nexport = ' + json.dumps(export) + '\n'
+            for key in ['package', 'developer', 'subject_key_id', 'provenance', 'abi']:
+                text += key + ' = ' + json.dumps(dependency[key]) + '\n'
     if engine_linked:
         text += '\n[[library_dependency]]\n'
         for key in ['package', 'developer', 'subject_key_id', 'provenance', 'abi']:

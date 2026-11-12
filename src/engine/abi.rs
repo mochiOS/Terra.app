@@ -32,6 +32,17 @@ pub(super) struct Options {
     pub user: *mut c_void,
     pub wake: Option<unsafe extern "C" fn(*mut c_void)>,
     pub event: Option<unsafe extern "C" fn(*mut c_void, *const Notification)>,
+    pub process_user: *mut c_void,
+    pub launch: Option<unsafe extern "C" fn(*mut c_void, *const ProcessRequest, *mut i32) -> u32>,
+    pub terminate: Option<unsafe extern "C" fn(*mut c_void, i32) -> u32>,
+}
+#[repr(C)]
+pub(super) struct ProcessRequest {
+    pub size: u32,
+    pub kind: u32,
+    pub identifier: u64,
+    pub socket: i32,
+    pub reserved: u32,
 }
 #[repr(C)]
 pub(super) struct Operation {

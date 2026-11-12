@@ -84,7 +84,7 @@ impl Native {
     /// Starts a session using a validated library-owned table that outlives the process.
     /// No engine object or borrowed callback pointer crosses the worker boundary.
     pub(super) fn start(api: &'static Api) -> Result<Self, String> {
-        if !api.compatible() {
+        if !api.compatible() || api.features & 8 == 0 {
             return Err("The installed WebKit library has an incompatible ABI.".into());
         }
         let (send, requests) = mpsc::sync_channel(256);
@@ -493,12 +493,16 @@ unsafe fn worker(
         local: BTreeMap::new(),
         overflow: false,
     });
+    let mut helpers = Box::new(super::processes::Helpers::new());
     let options = Options {
         size: size_of::<Options>() as u32,
         reserved: 0,
         user: (&mut *callback as *mut Callback).cast(),
         wake: None,
         event: Some(notification),
+        process_user: (&mut *helpers as *mut super::processes::Helpers).cast(),
+        launch: Some(super::processes::launch),
+        terminate: Some(super::processes::terminate),
     };
     let mut context = ptr::null_mut();
     // SAFETY: the complete table was validated; every operation below stays on this thread.
@@ -614,12 +618,16 @@ unsafe fn worker(
                 }
             }
             let result = unsafe { api.dispatch.unwrap()(context, 32) };
-            if result != 0 || callback.overflow {
+            helpers.reap();
+            let helper_error = helpers.take_error();
+            if result != 0 || callback.overflow || helper_error.is_some() {
                 for (&id, p) in &pages {
                     callback.queue.push_back(failure(
                         id,
                         p.navigation,
-                        if callback.overflow {
+                        if let Some(error) = &helper_error {
+                            error.clone()
+                        } else if callback.overflow {
                             "WebKit produced too many events; the session was stopped.".into()
                         } else {
                             format!("WebKit dispatch failed ({result}).")
@@ -659,11 +667,15 @@ unsafe fn worker(
     for p in pages.values() {
         unsafe { api.view_destroy.unwrap()(p.raw) };
     }
+    let helpers_stopped = helpers.shutdown();
     if !context.is_null() {
         // Drain cancellation callbacks before releasing their user data.
         for _ in 0..64 {
             unsafe { api.dispatch.unwrap()(context, 32) };
             if unsafe { api.destroy.unwrap()(context) } == 0 {
+                if !helpers_stopped {
+                    Box::leak(helpers);
+                }
                 return;
             }
             thread::sleep(TICK);
@@ -671,6 +683,7 @@ unsafe fn worker(
         // Keep callback memory valid if a broken engine refuses to quiesce.
         eprintln!("Terra: WebKit did not finish shutdown; retaining callback storage.");
         Box::leak(callback);
+        Box::leak(helpers);
     }
 }
 #[cfg(test)]
@@ -851,7 +864,7 @@ mod worker_tests {
     static API: Api = Api {
         size: size_of::<Api>() as u32,
         major: 1,
-        features: 1,
+        features: 9,
         create: Some(create),
         destroy: Some(destroy),
         dispatch: Some(dispatch),
@@ -918,7 +931,7 @@ mod worker_tests {
     #[test]
     fn c_layouts_match_the_major_one_x86_64_contract() {
         assert_eq!(size_of::<Api>(), 96);
-        assert_eq!(size_of::<Options>(), 32);
+        assert_eq!(size_of::<Options>(), 56);
         assert_eq!(size_of::<Notification>(), 48);
         assert_eq!(size_of::<Operation>(), 40);
         assert_eq!(size_of::<Input>(), 80);

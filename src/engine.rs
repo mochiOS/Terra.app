@@ -212,6 +212,8 @@ impl Engine for Unavailable {
 mod abi;
 #[cfg(any(test, all(target_os = "mochios", feature = "webkit-engine")))]
 mod native;
+#[cfg(any(test, all(target_os = "mochios", feature = "webkit-engine")))]
+mod processes;
 
 /// Selects the startup-linked native engine; host previews remain shell-only.
 /// Initial-exec TLS dependencies must be in the authenticated startup ELF graph,
