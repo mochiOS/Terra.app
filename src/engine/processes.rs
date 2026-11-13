@@ -7,6 +7,10 @@ use std::{
     ffi::c_void,
     io,
     os::fd::{AsFd, FromRawFd, OwnedFd},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+    },
 };
 const MAX_LIVE: usize = 64;
 const MAX_IDENTIFIERS: usize = 1024;
@@ -113,10 +117,30 @@ impl<P: Process> Registry<P> {
         error.map_or(Ok(()), Err)
     }
 }
+#[derive(Default)]
+pub(super) struct Diagnostics {
+    #[cfg(feature = "engine-probe")]
+    pub phase: AtomicU32,
+    pub web: AtomicU32,
+    pub network: AtomicU32,
+    pub live: AtomicU32,
+    pub stopped: AtomicBool,
+    pub kill: AtomicI32,
+    pub web_pid: AtomicI32,
+}
+impl Diagnostics {
+    pub(super) fn observe(&self, phase: u32) {
+        #[cfg(feature = "engine-probe")]
+        self.phase.store(phase, Ordering::Release);
+        #[cfg(not(feature = "engine-probe"))]
+        let _ = phase;
+    }
+}
 pub(super) struct Helpers {
     registry: Registry<Child>,
     error: Option<String>,
     stopping: bool,
+    pub diagnostics: Arc<Diagnostics>,
 }
 impl Helpers {
     pub(super) fn new() -> Self {
@@ -124,12 +148,29 @@ impl Helpers {
             registry: Registry::new(),
             error: None,
             stopping: false,
+            diagnostics: Arc::new(Diagnostics::default()),
         }
     }
     pub(super) fn reap(&mut self) {
+        #[cfg(feature = "engine-probe")]
+        {
+            let pid = self.diagnostics.kill.swap(0, Ordering::AcqRel);
+            if pid > 0 {
+                if let Err(e) = self.registry.terminate(pid) {
+                    self.error = Some(format!("Owned helper termination failed: {e}"));
+                }
+            }
+        }
         if let Err(e) = self.registry.reap() {
             self.error = Some(format!("Could not reap a WebKit helper: {e}"));
         }
+        self.update_live();
+    }
+    fn update_live(&self) {
+        self.diagnostics.live.store(
+            self.registry.entries.values().filter(|e| !e.exited).count() as u32,
+            Ordering::Release,
+        );
     }
     pub(super) fn take_error(&mut self) -> Option<String> {
         self.error.take()
@@ -140,6 +181,8 @@ impl Helpers {
             self.error = Some(format!("Could not stop a WebKit helper: {e}"));
             return false;
         }
+        self.update_live();
+        self.diagnostics.stopped.store(true, Ordering::Release);
         true
     }
     fn launch(&mut self, request: &ProcessRequest) -> io::Result<i32> {
@@ -177,6 +220,7 @@ impl Helpers {
             return Err(io::Error::last_os_error());
         }
         let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        self.diagnostics.observe(10 + request.kind);
         let executable = Executable::dependency(alias)?;
         let mut command = Command::new(executable);
         command
@@ -184,9 +228,26 @@ impl Helpers {
             .arg(IPC_FD.to_string())
             .env_clear()
             .env("LANG", "C.UTF-8")
-            .env("LD_LIBRARY_PATH", "/system/libraries:/system/libraries/webkit");
+            .env("FONTCONFIG_FILE", "/system/libraries/webkit/fonts.conf")
+            .env("FONTCONFIG_PATH", "/system/libraries/webkit")
+            .env("GIO_USE_TLS", "mochios")
+            .env("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1")
+            .env(
+                "LD_LIBRARY_PATH",
+                "/system/libraries:/system/libraries/webkit",
+            );
         command.inherit_fd(socket.as_fd(), IPC_FD)?;
-        self.registry.insert(command.spawn()?)
+        self.diagnostics.observe(20 + request.kind);
+        let pid = self.registry.insert(command.spawn()?)?;
+        self.diagnostics.observe(30 + request.kind);
+        if request.kind == 1 {
+            self.diagnostics.web.fetch_add(1, Ordering::AcqRel);
+            self.diagnostics.web_pid.store(pid, Ordering::Release);
+        } else {
+            self.diagnostics.network.fetch_add(1, Ordering::AcqRel);
+        }
+        self.update_live();
+        Ok(pid)
     }
 }
 /// C callbacks run on the engine worker. Returned PIDs name only owned Childs;

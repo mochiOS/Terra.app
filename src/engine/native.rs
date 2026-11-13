@@ -79,6 +79,7 @@ pub(super) struct Native {
     alive: Arc<AtomicBool>,
     zoom: bool,
     stop: Arc<AtomicBool>,
+    diagnostics: Arc<super::processes::Diagnostics>,
 }
 impl Native {
     /// Starts a session using a validated library-owned table that outlives the process.
@@ -93,6 +94,8 @@ impl Native {
         let running = alive.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
+        let diagnostics = Arc::new(super::processes::Diagnostics::default());
+        let observations = diagnostics.clone();
         // Only the immutable, startup-linked function table crosses threads.
         let address = api as *const Api as usize;
         thread::Builder::new()
@@ -100,7 +103,13 @@ impl Native {
             .spawn(move || {
                 // SAFETY: table is validated and remains startup-linked for process lifetime.
                 unsafe {
-                    worker(&*(address as *const Api), requests, output, stopped);
+                    worker(
+                        &*(address as *const Api),
+                        requests,
+                        output,
+                        stopped,
+                        observations,
+                    );
                 }
                 running.store(false, Ordering::Release);
             })
@@ -112,6 +121,7 @@ impl Native {
             alive,
             zoom: api.features & 2 != 0,
             stop,
+            diagnostics,
         })
     }
     fn enqueue(&self, request: Request) -> Result<(), String> {
@@ -487,6 +497,7 @@ unsafe fn worker(
     requests: Receiver<Request>,
     output: SyncSender<Event>,
     stop: Arc<AtomicBool>,
+    diagnostics: Arc<super::processes::Diagnostics>,
 ) {
     let mut callback = Box::new(Callback {
         queue: VecDeque::new(),
@@ -494,6 +505,7 @@ unsafe fn worker(
         overflow: false,
     });
     let mut helpers = Box::new(super::processes::Helpers::new());
+    helpers.diagnostics = diagnostics;
     let options = Options {
         size: size_of::<Options>() as u32,
         reserved: 0,
@@ -506,7 +518,9 @@ unsafe fn worker(
     };
     let mut context = ptr::null_mut();
     // SAFETY: the complete table was validated; every operation below stays on this thread.
+    helpers.diagnostics.observe(1);
     let status = unsafe { api.create.unwrap()(&options, &mut context) };
+    helpers.diagnostics.observe(2);
     let mut pages = BTreeMap::<TabId, WorkerPage>::new();
     let mut shutdown = false;
     while !shutdown && !stop.load(Ordering::Acquire) {
@@ -520,7 +534,10 @@ unsafe fn worker(
                 Ok(Request::Create(id, state)) => {
                     let mut raw = ptr::null_mut();
                     let result = if status == 0 && !context.is_null() {
-                        unsafe { api.view_create.unwrap()(context, id, &mut raw) }
+                        helpers.diagnostics.observe(3);
+                        let result = unsafe { api.view_create.unwrap()(context, id, &mut raw) };
+                        helpers.diagnostics.observe(4);
+                        result
                     } else {
                         status.max(3)
                     };
@@ -556,7 +573,10 @@ unsafe fn worker(
                         }
                         let result = if let Some(p) = pages.get_mut(&id) {
                             p.navigation = op.navigation;
-                            unsafe { api.command.unwrap()(p.raw, &op) }
+                            helpers.diagnostics.observe(5);
+                            let result = unsafe { api.command.unwrap()(p.raw, &op) };
+                            helpers.diagnostics.observe(6);
+                            result
                         } else {
                             3
                         };
@@ -617,7 +637,9 @@ unsafe fn worker(
                     }
                 }
             }
+            helpers.diagnostics.observe(7);
             let result = unsafe { api.dispatch.unwrap()(context, 32) };
+            helpers.diagnostics.observe(8);
             helpers.reap();
             let helper_error = helpers.take_error();
             if result != 0 || callback.overflow || helper_error.is_some() {
@@ -945,4 +967,111 @@ mod worker_tests {
         broken.major = 2;
         assert!(!broken.compatible());
     }
+}
+
+#[cfg(feature = "engine-probe")]
+pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
+    use std::io::Write;
+    let mut log = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open("/tmp/terra-engine-results.log")
+        .map_err(|e| e.to_string())?;
+    writeln!(log, "TERRA-ENGINE BEGIN").map_err(|e| e.to_string())?;
+    use std::os::fd::AsRawFd;
+    let stderr = std::fs::OpenOptions::new()
+        .write(true).create_new(true).open("/tmp/terra-engine-stderr.log")
+        .map_err(|e| e.to_string())?;
+    // Only the disposable native fixture redirects stdio; normal Terra keeps
+    // the launching session's descriptors. Signed children inherit this log.
+    if unsafe { libc::dup2(stderr.as_raw_fd(), 2) } < 0
+        || unsafe { libc::dup2(stderr.as_raw_fd(), 1) } < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut engine = match Native::start(api) {
+        Ok(engine) => engine,
+        Err(error) => {
+            writeln!(log, "TERRA-ENGINE FAIL {error}").map_err(|e| e.to_string())?;
+            return Err(error);
+        }
+    };
+    let diagnostics = engine.diagnostics.clone();
+    let outcome = (|| -> Result<(), String> {
+        engine.send(Command::Create(1))?;
+        engine.pages[&1]
+            .state
+            .size
+            .store((800u64 << 32) | 600, Ordering::Release);
+        engine.send(Command::Navigate {
+            tab: 1,
+            navigation: 1,
+            url: "http://10.0.2.2:18087/check".into(),
+        })?;
+        let deadline = Instant::now() + Duration::from_secs(600);
+        let mut finished = false;
+        let mut next_status = Instant::now();
+        while Instant::now() < deadline {
+            if Instant::now() >= next_status {
+                writeln!(log, "STATE phase={} web={} network={} live={}", diagnostics.phase.load(Ordering::Acquire), diagnostics.web.load(Ordering::Acquire), diagnostics.network.load(Ordering::Acquire), diagnostics.live.load(Ordering::Acquire)).map_err(|e| e.to_string())?;
+                next_status = Instant::now() + Duration::from_secs(10);
+            }
+            while let Some(event) = engine.poll() {
+                writeln!(log, "{event:?}").map_err(|e| e.to_string())?;
+                match event {
+                    Event::Finished { navigation: 1, .. } => finished = true,
+                    Event::Failed { message, .. } => return Err(message),
+                    _ => {}
+                }
+            }
+            let frame = engine.pages[&1]
+                .state
+                .image
+                .lock()
+                .map_err(|_| "frame lock")?
+                .is_some();
+            if finished
+                && frame
+                && diagnostics.web.load(Ordering::Acquire) > 0
+                && diagnostics.network.load(Ordering::Acquire) > 0
+            {
+                writeln!(log, "HELPERS + IPC + FRAME PASS").map_err(|e| e.to_string())?;
+                diagnostics.kill.store(
+                    diagnostics.web_pid.load(Ordering::Acquire),
+                    Ordering::Release,
+                );
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while Instant::now() < deadline {
+                    if let Some(Event::Failed { message, .. }) = engine.poll() {
+                        writeln!(log, "ABNORMAL EXIT REPORTED: {message}")
+                            .map_err(|e| e.to_string())?;
+                        return Ok(());
+                    }
+                    thread::sleep(TICK);
+                }
+                return Err("Web process termination was not reported".into());
+            }
+            thread::sleep(TICK);
+        }
+        Err("Real engine did not finish the native IPC/frame probe".into())
+    })();
+    drop(engine);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !diagnostics.stopped.load(Ordering::Acquire) && Instant::now() < deadline {
+        thread::sleep(TICK);
+    }
+    let outcome = outcome.and_then(|()| {
+        if diagnostics.stopped.load(Ordering::Acquire)
+            && diagnostics.live.load(Ordering::Acquire) == 0
+        {
+            Ok(())
+        } else {
+            Err("Owned WebKit helpers did not quiesce".into())
+        }
+    });
+    match &outcome {
+        Ok(()) => writeln!(log, "TERRA-ENGINE PASS"),
+        Err(e) => writeln!(log, "TERRA-ENGINE FAIL {e}"),
+    }
+    .map_err(|e| e.to_string())?;
+    outcome
 }

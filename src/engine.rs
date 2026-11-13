@@ -244,3 +244,20 @@ pub(crate) fn connect() -> Box<dyn Engine> {
     }
     Box::new(Unavailable)
 }
+
+#[cfg(all(target_os = "mochios", feature = "engine-probe"))]
+pub(crate) fn run_probe() -> Result<(), String> {
+    #[link(name = "webkit")]
+    unsafe extern "C" {
+        fn mwk_get_api(major: u32, size: usize, output: *mut *const abi::Api) -> u32;
+    }
+    let mut table = std::ptr::null();
+    let result = unsafe { mwk_get_api(1, size_of::<abi::Api>(), &mut table) };
+    if result != 0
+        || table.is_null()
+        || unsafe { *table.cast::<u32>() } < size_of::<abi::Api>() as u32
+    {
+        return Err(format!("Native ABI negotiation failed: {result}"));
+    }
+    native::run_probe(unsafe { &*table })
+}

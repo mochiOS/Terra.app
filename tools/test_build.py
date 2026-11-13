@@ -91,3 +91,16 @@ class SystemEngineIdentity(unittest.TestCase):
         self.assertEqual(identity['developer'],'org.mochios.system')
         self.assertEqual(identity['subject_key_id'],'0'*64)
         self.assertEqual(identity['provenance'],'built-in')
+
+class NativeProbeIsolation(unittest.TestCase):
+    def test_probe_cannot_be_packaged_or_built_as_shell(self):
+        import subprocess
+        import sys
+        for args in [
+            ['package', '--webkit-prefix', '/unused/engine', '--engine-probe'],
+            ['build', '--shell-only', '--engine-probe'],
+            ['build', '--webkit-prefix', '/unused/engine', '--binary', '/unused/elf', '--engine-probe'],
+        ]:
+            result = subprocess.run([sys.executable, str(module.ROOT / 'tools/build.py'), *args], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--engine-probe requires build', result.stderr)

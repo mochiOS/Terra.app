@@ -210,3 +210,35 @@ verification identity, not a separately invented publisher or signing key.
 builds. The child library search path contains `/system/libraries` and
 `/system/libraries/webkit`; code selection still uses signed executable references.
 Installing Terra does not install, replace, or mutate System WebKit.
+
+
+### Native integration fixture
+
+`engine-probe` is an explicit development feature, separate from the normal
+`webkit-engine` application. Build it with the same reviewed native SDK and
+verified engine prefix:
+
+```sh
+python3 tools/build.py build --sdk /path/to/rust-sdk/share/app-build.json \
+  --webkit-prefix /path/to/verified-engine-prefix \
+  --shared-sdk /path/to/shared-cxx-sdk --engine-probe
+```
+
+This produces `out/native-probe/entry.elf`, without an installable package.
+The command rejects packaging, shell mode, and reuse of an unknown binary.
+Run only in a fresh disposable mochiOS VM with the normal signed Terra library
+and helper dependencies. The fixture uses the ordinary AppCore executable
+references and inherited IPC socket. It requires no broad filesystem access.
+
+Serve `resources/engine-check.html` at `http://10.0.2.2:18087/check` through
+QEMU user networking. The fixture creates `/tmp/terra-engine-results.log` once:
+existing logs are rejected. A pass requires completed navigation, a retained
+engine frame, both real helper kinds, detection of termination of the owned web
+process, and successful termination/reaping of every owned helper. A startup,
+IPC, rendering or cleanup error cannot produce `TERRA-ENGINE PASS`.
+
+This is mechanism verification. Visual correctness and interactions must be
+checked separately with the normal application at `terra:///engine-check`.
+A successful link or offline ELF preparation does not establish a VM pass.
+The development SDK used for verification can differ from a published SDK;
+record its runtime hash and source commits with the test result.

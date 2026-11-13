@@ -74,8 +74,10 @@ def has_engine_dependency(binary):
     return bool(re.search(r'\(NEEDED\).*\[libwebkit\.so\.1\]', dynamic))
 
 
-def build(sdk_file, output, shared_sdk=None, webkit_prefix=None):
+def build(sdk_file, output, shared_sdk=None, webkit_prefix=None, *, engine_probe=False):
     """Compile against SDK metadata, without invoking the OS build system."""
+    if engine_probe and webkit_prefix is None:
+        raise ValueError('The native integration probe requires WebKit')
     sdk = json.loads(sdk_file.read_text())
     if sdk.get('format') != 1:
         raise ValueError('Unsupported SDK description')
@@ -107,6 +109,8 @@ def build(sdk_file, output, shared_sdk=None, webkit_prefix=None):
     args += ['--release', '--target', sdk['target'], '--target-dir', sdk['target_dir'], '--manifest-path', staging / 'Cargo.toml', '--bin', 'terra']
     if webkit_prefix:
         args += ['--features', 'webkit-engine']
+    if engine_probe:
+        args += ['--features', 'engine-probe']
     run(args, env=env, cwd=staging)
     binary = pathlib.Path(sdk['target_dir']) / pathlib.Path(sdk['target']).stem / 'release/terra'
     elf(binary)
@@ -197,12 +201,15 @@ def main():
     mode.add_argument('--shell-only', action='store_true')
     mode.add_argument('--engine-prefix', type=pathlib.Path)
     mode.add_argument('--webkit-prefix', type=pathlib.Path, help='Compile/link against a separately installed native WebKit prefix; never bundle it')
+    parser.add_argument('--engine-probe', action='store_true', help='Build an opt-in native integration fixture, never a distributable app')
     parser.add_argument('--shared-sdk', type=pathlib.Path, help='Shared C/C++ SDK used for final linking')
     parser.add_argument('--engine-dependency', type=pathlib.Path, help='Override the built-in System WebKit dependency identity')
     parser.add_argument('--mpack', type=pathlib.Path)
     parser.add_argument('--msign', type=pathlib.Path)
     parser.add_argument('--identity')
     args = parser.parse_args()
+    if args.engine_probe and (args.command != 'build' or not args.webkit_prefix or args.binary is not None):
+        parser.error('--engine-probe requires build --webkit-prefix and cannot package or reuse a binary')
     if args.binary is None and args.sdk is None:
         parser.error('--sdk is required to compile; --binary accepts an already-built ELF')
     if args.command == 'package' and args.mpack is None:
@@ -212,7 +219,13 @@ def main():
     if args.webkit_prefix and args.engine_dependency is None:
         args.engine_dependency = ROOT / 'resources/webkit-dependency.toml'
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
-    binary = args.binary.resolve() if args.binary else build(args.sdk.resolve(), args.output, args.shared_sdk.resolve() if args.shared_sdk else None, args.webkit_prefix.resolve() if args.webkit_prefix else None)
+    binary = args.binary.resolve() if args.binary else build(args.sdk.resolve(), args.output, args.shared_sdk.resolve() if args.shared_sdk else None, args.webkit_prefix.resolve() if args.webkit_prefix else None, engine_probe=args.engine_probe)
+    if args.engine_probe:
+        destination = args.output / 'native-probe'
+        destination.mkdir(exist_ok=True)
+        shutil.copy2(binary, destination / 'entry.elf')
+        print(destination / 'entry.elf')
+        return
     product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None, engine_linked=bool(args.webkit_prefix), dependency=engine_dependency(args.engine_dependency) if args.engine_dependency else None)
     if args.command == 'package':
         package(product, args.output, args.mpack.resolve(), args.msign.resolve() if args.msign else None, args.identity)

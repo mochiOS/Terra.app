@@ -10,6 +10,8 @@ publish = false
 default = []
 # Requires a separately installed native engine and its reviewed startup graph.
 webkit-engine = []
+# Opt-in native integration fixture; never enabled in the distributed app.
+engine-probe = ["webkit-engine"]
 
 [dependencies]
 appcore = { package = "mochios-appcore", path = "../../tools/devkit/crates/appcore" }

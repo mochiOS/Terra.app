@@ -24,5 +24,14 @@ impl App for TerraApp {
     }
 }
 fn main() -> Result<(), ViewKitError> {
+    #[cfg(all(target_os = "mochios", feature = "engine-probe"))]
+    {
+        let result = engine::run_probe();
+        if let Err(e) = &result {
+            eprintln!("Terra engine probe: {e}");
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    #[cfg(not(all(target_os = "mochios", feature = "engine-probe")))]
     run::<TerraApp>()
 }
