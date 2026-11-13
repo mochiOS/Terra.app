@@ -286,3 +286,14 @@ failure observation uses a nightly-only hook exclusively in the native test
 feature. Normal Terra does not install these hooks. The private OS fixture also
 provides the ordinary root-owned diagnostics directory for existing local
 termination reports; these records are not transmitted.
+
+For manual verification, build the normal product without `--engine-probe`,
+then use `tools/stage_probe.py --manual-product <product-directory>` instead of
+`--probe`. This validates that the product links the engine and stages the same
+verified dependencies, but does not install the headless launcher configuration.
+Merge that overlay with the ordinary desktop overlay produced by the OS
+`scripts/testing/stage_desktop_overlay.py` tool. Assemble it using the ordinary
+service directory and `image.py --without-probe-apps --system-libraries`.
+This private development image is not an AppStore package. Open Terra and visit
+`terra:///engine-check` to check the real page visually; a successful desktop
+boot alone does not establish correct rendering.

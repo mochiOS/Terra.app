@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage only the opt-in native engine probe in a disposable VM overlay."""
+"""Stage native WebKit validation applications in disposable VM overlays."""
 import argparse
 import json
 from pathlib import Path
@@ -10,12 +10,16 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def stage(probe, output, msign):
+def stage(probe, output, msign, *, manual=False):
     """Bind a private built-in fixture with the normal signed helper dependencies."""
     if output.exists():
         raise ValueError('Use a fresh private overlay directory')
-    # This tool consumes the dedicated build output, not a distributable product.
-    if probe.name != 'entry.elf' or probe.parent.name != 'native-probe':
+    if manual:
+        report = json.loads((probe / 'artifacts.json').read_text())
+        if report.get('shell_only') is not False or report.get('engine_adapter_linked') is not True:
+            raise ValueError('Expected a normal product linked to the real engine')
+        probe = probe / 'payload/bundle/entry.elf'
+    elif probe.name != 'entry.elf' or probe.parent.name != 'native-probe':
         raise ValueError('Expected tools/build.py --engine-probe output')
     dynamic = subprocess.check_output(['readelf', '-d', str(probe)], text=True)
     if '[libwebkit.so.1]' not in dynamic:
@@ -58,19 +62,24 @@ def stage(probe, output, msign):
     subprocess.run([str(msign), 'package', 'built-in-record', str(package / 'manifest.toml'),
                     '--output', str(package / 'verification.bin')], check=True)
     source.unlink()
-    resources = output / 'system/resources'
-    resources.mkdir(parents=True)
-    (resources / 'native-test.conf').write_text(
-        'application=/system/applications/Terra.app/entry.elf\n'
-        'result=/tmp/terra-engine-results.log\npass=TERRA-ENGINE PASS\n'
-        'fail=TERRA-ENGINE FAIL\ntimeout_seconds=1260\n')
-    print('Private native probe overlay:', output)
+    if not manual:
+        resources = output / 'system/resources'
+        resources.mkdir(parents=True)
+        (resources / 'native-test.conf').write_text(
+            'application=/system/applications/Terra.app/entry.elf\n'
+            'result=/tmp/terra-engine-results.log\npass=TERRA-ENGINE PASS\n'
+            'fail=TERRA-ENGINE FAIL\ntimeout_seconds=1260\n')
+    print('Private native application overlay:', output)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--probe', type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument('--probe', type=Path)
+    inputs.add_argument('--manual-product', type=Path, help='Normal linked product for manual desktop verification')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--msign', type=Path, required=True)
     args = parser.parse_args()
-    stage(args.probe.resolve(strict=True), args.output.resolve(), args.msign.resolve(strict=True))
+    selected = args.probe or args.manual_product
+    stage(selected.resolve(strict=True), args.output.resolve(), args.msign.resolve(strict=True),
+          manual=args.manual_product is not None)
