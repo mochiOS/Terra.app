@@ -10,6 +10,7 @@ use appcore::viewkit::{
     platform::PointerButton,
     view::{Constraints, MeasureContext, PaintContext},
 };
+use appcore::window::{TitleBar, drag_region};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
@@ -93,6 +94,7 @@ struct Core {
     editing_address: Cell<bool>,
     address_bounds: Cell<Option<Rect>>,
     address_ready: Cell<Option<Rect>>,
+    content_bounds: Cell<Option<Rect>>,
     buttons: RefCell<BTreeMap<Action, ButtonInteractionState>>,
     icons: RefCell<BTreeMap<Action, IconButtonInteractionState>>,
     rows: RefCell<BTreeMap<String, ButtonInteractionState>>,
@@ -159,7 +161,7 @@ impl Core {
         let connected = self.engine.borrow().available();
         let document = b.document_id() != 0;
         let key = format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             b.can_reopen(),
             b.tab().id,
             b.tab().pinned,
@@ -171,7 +173,11 @@ impl Core {
             features.zoom,
             document,
             features.reader,
-            features.printing
+            features.printing,
+            b.tab().can_back,
+            b.tab().can_forward,
+            b.tab().loading,
+            !b.tab().draft.is_empty(),
         );
         if let Some((old, menu)) = self.menu.borrow().as_ref() {
             if old == &key {
@@ -219,6 +225,17 @@ impl Core {
                 connected && features.printing && document,
             ),
             ("Browser Settings…", Action::Settings, true),
+            ("Back", Action::Back, connected && b.tab().can_back),
+            ("Forward", Action::Forward, connected && b.tab().can_forward),
+            if b.tab().loading {
+                ("Stop Loading", Action::Stop, connected)
+            } else {
+                (
+                    "Reload",
+                    Action::Reload,
+                    connected && !b.tab().draft.is_empty(),
+                )
+            },
         ] {
             if !enabled {
                 menu = menu.disabled_option(label);
@@ -253,7 +270,7 @@ impl Core {
     }
     fn sync_address(&self) {
         let b = self.browser.borrow();
-        self.selected.set_if_changed(b.active);
+        self.selected.set_if_changed(b.tab().id as usize);
         self.address_state.set_value(b.tab().draft.clone());
     }
     fn focus_address(&self) {
@@ -483,6 +500,26 @@ impl Core {
             self.perform(action);
         }
     }
+    // Both surfaces share the existing action queue and retained tab identities.
+    fn finish_input(&self) -> bool {
+        if self.editing_address.get() {
+            let mut browser = self.browser.borrow_mut();
+            let active = browser.active;
+            browser.tabs[active].draft = self.address_state.value();
+        }
+        let selected = self
+            .browser
+            .borrow()
+            .tabs
+            .iter()
+            .position(|tab| tab.id as usize == self.selected.get());
+        if let Some(index) = selected {
+            self.select(index);
+        }
+        let editing = self.editing_address.get();
+        self.drain();
+        !editing && self.editing_address.get()
+    }
     fn select(&self, index: usize) {
         let valid = {
             let b = self.browser.borrow();
@@ -545,7 +582,7 @@ impl BrowserView {
             browser: RefCell::new(Browser::new()),
             engine: RefCell::new(engine),
             pending,
-            selected: State::new(0),
+            selected: State::new(1),
             tabs: TabsInteractionState::new(),
             tab_scroll: ScrollState::new(),
             address,
@@ -554,6 +591,7 @@ impl BrowserView {
             editing_address: Cell::new(false),
             address_bounds: Cell::new(None),
             address_ready: Cell::new(None),
+            content_bounds: Cell::new(None),
             buttons: RefCell::new(BTreeMap::new()),
             icons: RefCell::new(BTreeMap::new()),
             rows: RefCell::new(BTreeMap::new()),
@@ -617,7 +655,16 @@ impl BrowserView {
         }
         view
     }
-    fn navigation(&self, width: f32, theme: &Theme) -> Toolbar<HStack> {
+    /// Builds browser chrome in the protected custom title-bar area. The runtime
+    /// reserves system controls and keeps this view alive across tab updates.
+    pub(crate) fn titlebar(&self) -> TitleBar {
+        TitleBar::new()
+            .height(Theme::current().layout.top_bar_height.max(40.0))
+            .background(RectangleColor::SubtleSurface)
+            .separator(true)
+            .center(drag_region(BrowserTitleBar(self.clone())))
+    }
+    fn navigation(&self, width: f32, theme: &Theme) -> Padding<HStack> {
         let b = self.core.browser.borrow();
         let t = b.tab();
         let available = self.core.engine.borrow().available();
@@ -633,7 +680,7 @@ impl BrowserView {
             .document
             .as_ref()
             .is_some_and(|d| b.bookmarks.iter().any(|e| e.url == d.url));
-        Toolbar::new(
+        Padding::symmetric(theme.spacing.small, 0.0).content(
             HStack::new()
                 .alignment(StackAlignment::Center)
                 .gap(StackGap::Small)
@@ -644,14 +691,22 @@ impl BrowserView {
                         .layout()
                         .flex_shrink(0.0),
                 )
-                .child(
-                    self.core
-                        .navigation_icon("Forward", SymbolName::ArrowForward, Action::Forward)
-                        .enabled(available && t.can_forward)
-                        .layout()
-                        .flex_shrink(0.0),
-                )
-                .child(reload.layout().flex_shrink(0.0))
+                .children(if width >= theme.layout.compact_form_control_width * 1.5 {
+                    vec![
+                        self.core
+                            .navigation_icon("Forward", SymbolName::ArrowForward, Action::Forward)
+                            .enabled(available && t.can_forward)
+                            .layout()
+                            .flex_shrink(0.0),
+                    ]
+                } else {
+                    vec![]
+                })
+                .children(if width >= theme.layout.compact_form_control_width * 2.0 {
+                    vec![reload.layout().flex_shrink(0.0)]
+                } else {
+                    vec![]
+                })
                 .child(BrowserTabs(self.core.clone()).layout().flex_grow(1.0))
                 .child(
                     self.core
@@ -745,8 +800,7 @@ impl BrowserView {
     fn content(&self, theme: &Theme, width: f32) -> Surface<VStack> {
         let mut layout = VStack::new()
             .alignment(StackAlignment::Stretch)
-            .gap(StackGap::None)
-            .child(self.navigation(width, theme).layout().flex_shrink(0.0));
+            .gap(StackGap::None);
         if self.core.finding.get() {
             layout = layout.child(self.find_bar().layout().flex_shrink(0.0));
         }
@@ -805,6 +859,63 @@ impl BrowserView {
         Surface::app().content(layout)
     }
 }
+/// Shares the browser's retained interaction states with the normal body.
+struct BrowserTitleBar(BrowserView);
+impl View for BrowserTitleBar {
+    fn measure(&self, c: Constraints, m: &mut MeasureContext<'_>) -> Size {
+        c.constrain(Size::new(
+            c.maximum.width,
+            m.theme.layout.top_bar_height.max(40.0),
+        ))
+    }
+    fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
+        self.0.navigation(b.size.width, c.theme).paint(b, c);
+        let popup = self.0.suggestions(
+            self.0.core.content_bounds.get().unwrap_or(b),
+            &mut MeasureContext {
+                theme: c.theme,
+                typography: c.typography,
+                text_measurer: &mut *c.text_measurer,
+            },
+        );
+        if let Some((bounds, popup)) = popup {
+            popup.paint(bounds, c);
+        }
+    }
+    fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
+        // The caption receives input before the body. Apply a pending Ctrl+L /
+        // selected-tab focus request before the first text/IME event reaches it.
+        if !matches!(
+            e,
+            ViewEvent::PointerFocusRequested { .. }
+                | ViewEvent::KeyboardFocusRequested { .. }
+                | ViewEvent::FocusChanged { focused: false }
+        ) {
+            if let Some(target) = self.0.core.address_ready.take() {
+                self.0.core.focus_address.set(false);
+                self.0.core.address.handle_event(
+                    target,
+                    &ViewEvent::KeyboardFocusRequested {
+                        bounds: Some(target),
+                    },
+                    c,
+                );
+                c.request_keyboard_focus(target);
+            }
+        }
+        let navigation = self.0.navigation(b.size.width, c.theme());
+        let result = navigation.handle_event(b, e, c);
+        if self.0.core.finish_input() {
+            navigation.handle_event(b, &ViewEvent::KeyboardFocusRequested { bounds: None }, c);
+            self.0.core.address_state.set_focused(true);
+        }
+        if result.is_consumed() {
+            c.request_redraw();
+        }
+        result
+    }
+}
+
 struct BrowserTabs(Rc<Core>);
 impl BrowserTabs {
     fn item_width(&self, available: f32, theme: &Theme) -> f32 {
@@ -837,7 +948,9 @@ impl BrowserTabs {
             let pending = self.0.pending.clone();
             let id = tab.id;
             let label = format!("{}{}", if tab.pinned { "• " } else { "" }, tab.title());
-            tabs = tabs.closable_item(index, label, move || enqueue(&pending, Action::Close(id)));
+            tabs = tabs.closable_item(id as usize, label, move || {
+                enqueue(&pending, Action::Close(id))
+            });
         }
         Scroll::new(self.0.tab_scroll.clone())
             .axis(ScrollAxis::Horizontal)
@@ -958,6 +1071,7 @@ impl View for BrowserView {
         c.constrain(c.maximum)
     }
     fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
+        self.core.content_bounds.set(Some(b));
         self.core.drain();
         self.core.poll(c);
         if let Some(deadline) = self.core.save_at.get() {
@@ -968,17 +1082,6 @@ impl View for BrowserView {
             }
         }
         self.content(c.theme, b.size.width).paint(b, c);
-        let popup = self.suggestions(
-            b,
-            &mut MeasureContext {
-                theme: c.theme,
-                typography: c.typography,
-                text_measurer: &mut *c.text_measurer,
-            },
-        );
-        if let Some((bounds, popup)) = popup {
-            popup.paint(bounds, c);
-        }
     }
     fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
         if let ViewEvent::ContextMenuResult {
@@ -1015,7 +1118,10 @@ impl View for BrowserView {
                 return EventResult::Consumed;
             }
         }
-        let popup = self.suggestions(b, &mut c.measure_context());
+        let popup = self.suggestions(
+            self.core.content_bounds.get().unwrap_or(b),
+            &mut c.measure_context(),
+        );
         let outside = matches!(e, ViewEvent::PointerFocusRequested { position }
             if !self.core.address_bounds.get().is_some_and(|r|r.contains(*position))
                 && !popup.as_ref().is_some_and(|(bounds,_)|bounds.contains(*position)));
@@ -1042,8 +1148,8 @@ impl View for BrowserView {
         } else if !matches!(e, ViewEvent::KeyboardFocusRequested { .. }) {
             if let Some(target) = self.core.address_ready.take() {
                 self.core.focus_address.set(false);
-                self.content(c.theme(), b.size.width).handle_event(
-                    b,
+                self.core.address.handle_event(
+                    target,
                     &ViewEvent::KeyboardFocusRequested {
                         bounds: Some(target),
                     },
@@ -1062,13 +1168,15 @@ impl View for BrowserView {
                 self.core.find_ready.set(None);
             } else if let Some(target) = self.core.find_ready.take() {
                 self.core.find_focus.set(false);
-                self.content(c.theme(), b.size.width).handle_event(
-                    b,
-                    &ViewEvent::KeyboardFocusRequested {
-                        bounds: Some(target),
-                    },
-                    c,
-                );
+                let content_bounds = self.core.content_bounds.get().unwrap_or(b);
+                self.content(c.theme(), content_bounds.size.width)
+                    .handle_event(
+                        content_bounds,
+                        &ViewEvent::KeyboardFocusRequested {
+                            bounds: Some(target),
+                        },
+                        c,
+                    );
                 c.request_keyboard_focus(target);
             }
         }
@@ -1191,15 +1299,7 @@ impl View for BrowserView {
         } else {
             self.content(c.theme(), b.size.width).handle_event(b, e, c)
         };
-        {
-            let mut browser = self.core.browser.borrow_mut();
-            let active = browser.active;
-            browser.tabs[active].draft = self.core.address_state.value();
-        }
-        self.core.select(self.core.selected.get());
-        let editing = self.core.editing_address.get();
-        self.core.drain();
-        if !editing && self.core.editing_address.get() {
+        if self.core.finish_input() {
             self.content(c.theme(), b.size.width).handle_event(
                 b,
                 &ViewEvent::KeyboardFocusRequested { bounds: None },
@@ -1260,11 +1360,55 @@ mod tests {
             None
         }
     }
+    struct BrowserWindow<'a>(&'a BrowserView);
+    fn window(view: &BrowserView) -> BrowserWindow<'_> {
+        BrowserWindow(view)
+    }
+    impl BrowserWindow<'_> {
+        fn frames(&self, b: Rect, theme: &Theme) -> (Rect, Rect) {
+            let height = theme.layout.top_bar_height.max(40.0).min(b.size.height);
+            let layout = appcore::window::DecorationLayout {
+                height,
+                controls_width: 112.0,
+                state: appcore::window::WindowState::Normal,
+            };
+            (
+                layout.custom_bounds(b),
+                Rect::new(
+                    b.origin.x,
+                    b.origin.y + height,
+                    b.size.width,
+                    (b.size.height - height).max(0.0),
+                ),
+            )
+        }
+    }
+    impl View for BrowserWindow<'_> {
+        fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
+            let (caption, body) = self.frames(b, c.theme);
+            self.0.paint(body, c);
+            drag_region(BrowserTitleBar(self.0.clone())).paint(caption, c);
+        }
+        fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
+            let (caption, body) = self.frames(b, c.theme());
+            let mut result = EventResult::Ignored;
+            if e.requires_broadcast() || e.position().is_none_or(|p| caption.contains(p)) {
+                result = drag_region(BrowserTitleBar(self.0.clone())).handle_event(caption, e, c);
+            }
+            if result.is_consumed() && !e.requires_broadcast() {
+                return result;
+            }
+            if e.requires_broadcast() || e.position().is_none_or(|p| body.contains(p)) {
+                result = result.merge(self.0.handle_event(body, e, c));
+            }
+            result
+        }
+    }
     fn snapshot(v: &BrowserView, b: Rect, theme: &Theme) -> (DisplayList, Vec<AccessibilityNode>) {
         let mut list = DisplayList::new();
         let mut nodes = vec![];
         let mut text = TextMeasurer::new();
-        v.paint(
+        window(v).paint(
             b,
             &mut PaintContext::new(&mut list, theme, &theme.typography, &mut text)
                 .with_accessibility_nodes(&mut nodes),
@@ -1299,6 +1443,101 @@ mod tests {
         snapshot(v, Rect::new(0., 0., 1000., 700.), &Theme::LIGHT);
         (tab, navigation)
     }
+    #[test]
+    fn integrated_caption_owns_tabs_and_new_tab_runs_once() {
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        let options = WindowOptions::new("Terra").titlebar(v.titlebar());
+        assert_eq!(
+            options.decoration(),
+            appcore::window::DecorationMode::Integrated
+        );
+        assert!(options.validate().is_ok());
+        let theme = Theme::LIGHT;
+        let bounds = Rect::new(0.0, 0.0, 900.0, 600.0);
+        let (_, nodes) = snapshot(&v, bounds, &theme);
+        let height = theme.layout.top_bar_height.max(40.0);
+        let tabs = nodes
+            .iter()
+            .find(|n| n.role == AccessibilityRole::TabList)
+            .unwrap();
+        assert!(tabs.bounds.origin.y + tabs.bounds.size.height <= height);
+        let button = nodes
+            .iter()
+            .find(|n| n.label.as_deref() == Some("New Tab (Ctrl+T)"))
+            .unwrap()
+            .bounds;
+        let point = Point::new(
+            button.origin.x + button.size.width / 2.0,
+            button.origin.y + button.size.height / 2.0,
+        );
+        let mut text = TextMeasurer::new();
+        let mut context = EventContext::new(&theme, &theme.typography, &mut text);
+        for event in [
+            ViewEvent::PointerPressed {
+                position: point,
+                button: PointerButton::Primary,
+            },
+            ViewEvent::PointerReleased {
+                position: point,
+                button: PointerButton::Primary,
+            },
+        ] {
+            window(&v).handle_event(bounds, &event, &mut context);
+        }
+        assert_eq!(v.core.browser.borrow().tabs.len(), 2);
+        let mut list = DisplayList::new();
+        let mut body_nodes = Vec::new();
+        v.paint(
+            Rect::new(0.0, height, 900.0, 600.0 - height),
+            &mut PaintContext::new(&mut list, &theme, &theme.typography, &mut text)
+                .with_accessibility_nodes(&mut body_nodes),
+        );
+        assert!(
+            !body_nodes
+                .iter()
+                .any(|n| n.role == AccessibilityRole::TabList)
+        );
+        assert!(
+            !body_nodes
+                .iter()
+                .any(|n| n.label.as_deref() == Some("More"))
+        );
+    }
+
+    #[test]
+    fn caption_tab_identities_survive_reordering_and_closing_a_neighbor() {
+        let v = BrowserView::new(Box::new(crate::engine::Unavailable));
+        v.core.perform(Action::New);
+        v.core.perform(Action::New);
+        let capture = || {
+            v.core.editing_address.set(false);
+            let (_, nodes) = snapshot(&v, Rect::new(0.0, 0.0, 1100.0, 600.0), &Theme::LIGHT);
+            let identities = nodes
+                .iter()
+                .filter(|n| n.role == AccessibilityRole::Tab)
+                .map(|n| n.identity);
+            let browser = v.core.browser.borrow();
+            browser
+                .visible_tabs()
+                .into_iter()
+                .map(|i| browser.tabs[i].id)
+                .zip(identities)
+                .collect::<BTreeMap<_, _>>()
+        };
+        let original = capture();
+        v.core.perform(Action::Move(-1));
+        assert_eq!(original, capture());
+        let first = v.core.browser.borrow().tabs[0].id;
+        v.core.perform(Action::Close(first));
+        let remaining = capture();
+        assert_eq!(remaining.len(), 2);
+        assert!(
+            remaining
+                .iter()
+                .all(|(id, identity)| original.get(id) == Some(identity))
+        );
+    }
+
     #[test]
     fn disconnected_engine_is_honest_and_navigation_controls_are_disabled() {
         let v = BrowserView::new(Box::new(crate::engine::Unavailable));
@@ -1423,7 +1662,10 @@ mod tests {
                 for label in ["Back", "Forward", "Reload", "Bookmark Page", "More"] {
                     let Some(node) = nodes.iter().find(|n| n.label.as_deref() == Some(label))
                     else {
-                        assert!(width == 320. && label == "Bookmark Page");
+                        assert!(
+                            width == 320.
+                                && matches!(label, "Forward" | "Reload" | "Bookmark Page")
+                        );
                         continue;
                     };
                     assert!(
@@ -1460,7 +1702,7 @@ mod tests {
         );
         let mut text = TextMeasurer::new();
         let mut c = EventContext::new(&theme, &theme.typography, &mut text);
-        v.handle_event(
+        window(&v).handle_event(
             b,
             &ViewEvent::PointerPressed {
                 position: p,
@@ -1468,7 +1710,7 @@ mod tests {
             },
             &mut c,
         );
-        v.handle_event(
+        window(&v).handle_event(
             b,
             &ViewEvent::PointerReleased {
                 position: p,
@@ -1477,6 +1719,8 @@ mod tests {
             &mut c,
         );
         let request = c.take_context_menu_request().expect("symbol command menu");
+        assert!(request.items.iter().any(|item| item.label == "Forward"));
+        assert!(request.items.iter().any(|item| item.label == "Reload"));
         assert!(
             !request
                 .items
@@ -1486,7 +1730,7 @@ mod tests {
                 .enabled
         );
         snapshot(&v, b, &theme);
-        v.handle_event(
+        window(&v).handle_event(
             b,
             &ViewEvent::ContextMenuResult {
                 request_id: request.request_id,
@@ -1498,7 +1742,7 @@ mod tests {
         for _ in 0..8 {
             v.core.perform(Action::New);
         }
-        v.handle_event(
+        window(&v).handle_event(
             b,
             &ViewEvent::KeyPressed {
                 key: Key::Escape,
@@ -1530,9 +1774,9 @@ mod tests {
         d.set_accessibility_nodes(&nodes);
         let mut text = TextMeasurer::new();
         let mut c = EventContext::new(&theme, &theme.typography, &mut text);
-        d.dispatch(&v, b, &PlatformEvent::Focused(true), &mut c);
+        d.dispatch(&window(&v), b, &PlatformEvent::Focused(true), &mut c);
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::PointerMoved {
                 x: tab.origin.x + tab.size.width * 0.4,
@@ -1542,7 +1786,7 @@ mod tests {
         );
         for state in [ButtonState::Pressed, ButtonState::Released] {
             d.dispatch(
-                &v,
+                &window(&v),
                 b,
                 &PlatformEvent::PointerButton {
                     button: PointerButton::Primary,
@@ -1562,7 +1806,7 @@ mod tests {
             1
         );
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::TextInput {
                 text: "example.org".into(),
@@ -1571,7 +1815,7 @@ mod tests {
         );
         assert_eq!(v.core.address_state.value(), "example.org");
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::KeyPressed {
                 key: Key::Escape,
@@ -1640,32 +1884,29 @@ mod tests {
                         assert!((button.size.height - buttons[0].size.height).abs() < 0.1);
                         assert!((button.origin.y - buttons[0].origin.y).abs() < 0.1);
                     }
-                    for (a, b) in (0..buttons.len() - 1)
-                        .filter(|i| *i != 2)
-                        .map(|i| (i, i + 1))
-                    {
-                        let gap = buttons[b].origin.x - buttons[a].origin.x - buttons[a].size.width;
-                        assert!((gap - theme.spacing.small).abs() < 0.1, "gap={gap}");
-                    }
-                    let left = buttons[0].origin.x;
-                    let last = buttons.last().unwrap();
-                    let right = width - last.origin.x - last.size.width;
-                    assert!((left - right).abs() < 0.1);
-                    assert!(left >= theme.spacing.small);
                     let tabs = nodes
                         .iter()
                         .find(|n| n.role == AccessibilityRole::Tab)
                         .unwrap()
                         .bounds;
-                    assert!(
-                        tabs.origin.x
-                            >= buttons[2].origin.x + buttons[2].size.width + theme.spacing.small
-                                - 0.1
-                    );
-                    assert!(
-                        tabs.origin.x + tabs.size.width
-                            <= buttons[3].origin.x - theme.spacing.small + 0.1
-                    );
+                    for pair in buttons.windows(2) {
+                        if pair[0].origin.x < tabs.origin.x && pair[1].origin.x > tabs.origin.x {
+                            continue;
+                        }
+                        let gap = pair[1].origin.x - pair[0].origin.x - pair[0].size.width;
+                        assert!((gap - theme.spacing.small).abs() < 0.1, "gap={gap}");
+                    }
+                    let left = buttons[0].origin.x;
+                    let last = buttons.last().unwrap();
+                    let custom_right = width - 112.0;
+                    let right = custom_right - last.origin.x - last.size.width;
+                    assert!((left - right).abs() < 0.1);
+                    assert!(left >= theme.spacing.small);
+                    assert!(tabs.size.width > 0.0);
+                    for button in &buttons {
+                        assert!(button.origin.x + button.size.width <= custom_right + 0.1);
+                        assert!(button.intersection(tabs).is_none());
+                    }
                 }
             }
         }
@@ -1718,10 +1959,10 @@ mod tests {
         let mut text = TextMeasurer::new();
         let mut c = EventContext::new(&theme, &theme.typography, &mut text);
         d.set_accessibility_nodes(&snapshot(&v, b, &theme).1);
-        d.dispatch(&v, b, &PlatformEvent::Focused(true), &mut c);
+        d.dispatch(&window(&v), b, &PlatformEvent::Focused(true), &mut c);
         let ctrl = KeyModifiers::from_bits(KeyModifiers::CONTROL);
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::KeyPressed {
                 key: Key::Character('l'),
@@ -1731,7 +1972,7 @@ mod tests {
         );
         d.set_accessibility_nodes(&snapshot(&v, b, &theme).1);
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::TextInput {
                 text: "example.org".into(),
@@ -1744,7 +1985,7 @@ mod tests {
             "address focus must survive dispatcher reconciliation"
         );
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::KeyPressed {
                 key: Key::Enter,
@@ -1755,7 +1996,7 @@ mod tests {
         assert!(v.core.browser.borrow().tab().error.is_some());
         assert!(v.core.browser.borrow().history.is_empty());
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::KeyPressed {
                 key: Key::Character('t'),
@@ -1765,7 +2006,7 @@ mod tests {
         );
         assert_eq!(v.core.browser.borrow().tabs.len(), 2);
         d.dispatch(
-            &v,
+            &window(&v),
             b,
             &PlatformEvent::KeyPressed {
                 key: Key::Character('w'),
@@ -1896,9 +2137,9 @@ mod tests {
         let mut text = TextMeasurer::new();
         let mut c = EventContext::new(&theme, &theme.typography, &mut text);
         d.set_accessibility_nodes(&snapshot(&v, bounds, &theme).1);
-        d.dispatch(&v, bounds, &PlatformEvent::Focused(true), &mut c);
+        d.dispatch(&window(&v), bounds, &PlatformEvent::Focused(true), &mut c);
         d.dispatch(
-            &v,
+            &window(&v),
             bounds,
             &PlatformEvent::KeyPressed {
                 key: Key::Character('f'),
@@ -1908,7 +2149,7 @@ mod tests {
         );
         d.set_accessibility_nodes(&snapshot(&v, bounds, &theme).1);
         d.dispatch(
-            &v,
+            &window(&v),
             bounds,
             &PlatformEvent::TextInput {
                 text: "hello".into(),
@@ -1917,7 +2158,7 @@ mod tests {
         );
         assert_eq!(v.core.find_text.value(), "hello");
         d.dispatch(
-            &v,
+            &window(&v),
             bounds,
             &PlatformEvent::KeyPressed {
                 key: Key::Enter,
@@ -1932,7 +2173,7 @@ mod tests {
                 .any(|command| matches!(command,Command::Find{text,..} if text=="hello"))
         );
         d.dispatch(
-            &v,
+            &window(&v),
             bounds,
             &PlatformEvent::KeyPressed {
                 key: Key::Escape,
@@ -2064,9 +2305,14 @@ mod tests {
         let mut text = TextMeasurer::new();
         let mut context = EventContext::new(&theme, &theme.typography, &mut text);
         dispatcher.set_accessibility_nodes(&nodes);
-        dispatcher.dispatch(&v, bounds, &PlatformEvent::Focused(true), &mut context);
         dispatcher.dispatch(
-            &v,
+            &window(&v),
+            bounds,
+            &PlatformEvent::Focused(true),
+            &mut context,
+        );
+        dispatcher.dispatch(
+            &window(&v),
             bounds,
             &PlatformEvent::PointerMoved {
                 x: row.origin.x + 12.,
@@ -2076,7 +2322,7 @@ mod tests {
         );
         for state in [ButtonState::Pressed, ButtonState::Released] {
             dispatcher.dispatch(
-                &v,
+                &window(&v),
                 bounds,
                 &PlatformEvent::PointerButton {
                     button: PointerButton::Primary,
@@ -2120,7 +2366,7 @@ mod tests {
             more.origin.x + more.size.width * 0.5,
             more.origin.y + more.size.height * 0.5,
         );
-        v.handle_event(
+        window(&v).handle_event(
             bounds,
             &ViewEvent::PointerPressed {
                 position: more_point,
@@ -2128,7 +2374,7 @@ mod tests {
             },
             &mut context,
         );
-        v.handle_event(
+        window(&v).handle_event(
             bounds,
             &ViewEvent::PointerReleased {
                 position: more_point,
@@ -2141,7 +2387,7 @@ mod tests {
             first.origin.x + 8.,
             first.origin.y + first.size.height * 0.5,
         );
-        v.handle_event(
+        window(&v).handle_event(
             bounds,
             &ViewEvent::PointerPressed {
                 position: point,
@@ -2152,7 +2398,7 @@ mod tests {
         let tab_menu = context.take_context_menu_request().unwrap();
         assert_ne!(menu.request_id, tab_menu.request_id);
         v.core.select(1);
-        v.handle_event(
+        window(&v).handle_event(
             bounds,
             &ViewEvent::ContextMenuResult {
                 request_id: tab_menu.request_id,
@@ -2165,7 +2411,7 @@ mod tests {
             v.core.browser.borrow().tab().draft,
             "https://first.example/"
         );
-        v.handle_event(
+        window(&v).handle_event(
             bounds,
             &ViewEvent::ContextMenuResult {
                 request_id: tab_menu.request_id,

@@ -18,6 +18,7 @@ impl App for TerraApp {
         WindowOptions::new("Terra")
             .size(layout.standard_window_width, layout.standard_window_height)
             .resizable(true)
+            .titlebar(self.view.titlebar())
     }
     fn body(&self, _: &ViewContext) -> Self::Body {
         self.view.clone()

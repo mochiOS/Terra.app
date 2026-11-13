@@ -8,7 +8,10 @@ validation is still pending, so this is not a claim of working web access yet.
 
 ## Browser features
 
-- Compact title tabs expand into an address editor when selected or with Ctrl+L.
+- Navigation and compact tabs share the integrated system title bar, beside
+  protected window controls; there is no second toolbar in the page content.
+  Empty title-bar space drags the window. Compact title tabs expand into an
+  address editor when selected or with Ctrl+L.
   Local suggestions search bookmarks, history and Reading List. No remote
   autocomplete requests are made. Narrow windows put secondary actions in More.
 - Start Page displays saved bookmarks and links to the browser libraries.
