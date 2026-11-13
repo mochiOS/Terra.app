@@ -338,6 +338,8 @@ struct Callback {
     queue: VecDeque<Event>,
     local: BTreeMap<TabId, NavigationId>,
     overflow: bool,
+    #[cfg(feature = "engine-probe")]
+    diagnostics: Arc<super::processes::Diagnostics>,
 }
 unsafe extern "C" fn notification(user: *mut c_void, event: *const Notification) {
     if user.is_null() || event.is_null() {
@@ -374,6 +376,10 @@ unsafe extern "C" fn notification(user: *mut c_void, event: *const Notification)
         } else if cb.local.get(&e.view) != Some(&e.navigation) {
             cb.local.remove(&e.view);
         }
+    }
+    #[cfg(feature = "engine-probe")]
+    if e.kind == 7 && e.view == 1 {
+        cb.diagnostics.process_exit_reported.store(true, Ordering::Release);
     }
     let event = match e.kind {
         2 => Event::Committed {
@@ -503,6 +509,8 @@ unsafe fn worker(
         queue: VecDeque::new(),
         local: BTreeMap::new(),
         overflow: false,
+        #[cfg(feature = "engine-probe")]
+        diagnostics: diagnostics.clone(),
     });
     let mut helpers = Box::new(super::processes::Helpers::new());
     helpers.diagnostics = diagnostics;
@@ -711,6 +719,32 @@ unsafe fn worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "engine-probe")]
+    #[test]
+    fn probe_requires_a_process_exit_event_instead_of_a_snapshot_error() {
+        let diagnostics = Arc::new(super::super::processes::Diagnostics::default());
+        let mut callback = Callback {
+            queue: VecDeque::new(),
+            local: BTreeMap::new(),
+            overflow: false,
+            diagnostics: diagnostics.clone(),
+        };
+        let mut event = Notification {
+            size: size_of::<Notification>() as u32,
+            kind: 4,
+            view: 1,
+            navigation: 1,
+            status: 1,
+            history: 0,
+            text: Bytes::new("Web content process terminated"),
+        };
+        unsafe { notification((&mut callback as *mut Callback).cast(), &event) };
+        assert!(!diagnostics.process_exit_reported.load(Ordering::Acquire));
+        event.kind = 7;
+        event.text = Bytes::new("a different process-exit explanation");
+        unsafe { notification((&mut callback as *mut Callback).cast(), &event) };
+        assert!(diagnostics.process_exit_reported.load(Ordering::Acquire));
+    }
     #[test]
     fn frame_validation_excludes_padding_and_rejects_overflow() {
         let pixels = [1, 2, 3, 255, 9, 9, 9, 9, 4, 5, 6, 255, 9, 9, 9, 9];
@@ -749,6 +783,8 @@ mod tests {
             queue: VecDeque::new(),
             local: BTreeMap::new(),
             overflow: false,
+            #[cfg(feature = "engine-probe")]
+            diagnostics: Default::default(),
         };
         let text = "https://example.test/";
         let event = Notification {
@@ -1064,8 +1100,11 @@ pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
                 );
                 let deadline = Instant::now() + Duration::from_secs(15);
                 while Instant::now() < deadline {
-                    if let Some(Event::Failed { message, .. }) = engine.poll() {
-                        writeln!(log, "ABNORMAL EXIT REPORTED: {message}")
+                    while let Some(event) = engine.poll() {
+                        writeln!(log, "AFTER TERMINATION: {event:?}").map_err(|e| e.to_string())?;
+                    }
+                    if diagnostics.process_exit_reported.load(Ordering::Acquire) {
+                        writeln!(log, "ABNORMAL EXIT REPORTED: native process-exited event")
                             .map_err(|e| e.to_string())?;
                         return Ok(());
                     }

@@ -121,6 +121,8 @@ impl<P: Process> Registry<P> {
 pub(super) struct Diagnostics {
     #[cfg(feature = "engine-probe")]
     pub phase: AtomicU32,
+    #[cfg(feature = "engine-probe")]
+    pub process_exit_reported: AtomicBool,
     pub web: AtomicU32,
     pub network: AtomicU32,
     pub live: AtomicU32,
