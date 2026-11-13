@@ -1,0 +1,6 @@
+# Existing built-in verification identity; authenticated by the signed System image.
+package = "org.mochios.webkit"
+developer = "org.mochios.system"
+subject_key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+provenance = "built-in"
+abi = "mochios-1"

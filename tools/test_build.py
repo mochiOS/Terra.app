@@ -83,3 +83,11 @@ class NativePackageIdentity(unittest.TestCase):
             report=json.loads((product/'artifacts.json').read_text())
             self.assertTrue(report['engine_adapter_linked']);self.assertFalse(report['runtime_tested'])
             self.assertFalse(report['engine_adapter_connected'])
+
+class SystemEngineIdentity(unittest.TestCase):
+    def test_default_dependency_uses_the_existing_system_image_identity(self):
+        identity=module.engine_dependency(module.ROOT/'resources/webkit-dependency.toml')
+        self.assertEqual(identity['package'],'org.mochios.webkit')
+        self.assertEqual(identity['developer'],'org.mochios.system')
+        self.assertEqual(identity['subject_key_id'],'0'*64)
+        self.assertEqual(identity['provenance'],'built-in')

@@ -198,7 +198,7 @@ def main():
     mode.add_argument('--engine-prefix', type=pathlib.Path)
     mode.add_argument('--webkit-prefix', type=pathlib.Path, help='Compile/link against a separately installed native WebKit prefix; never bundle it')
     parser.add_argument('--shared-sdk', type=pathlib.Path, help='Shared C/C++ SDK used for final linking')
-    parser.add_argument('--engine-dependency', type=pathlib.Path, help='Reviewed library_dependency identity as a TOML file')
+    parser.add_argument('--engine-dependency', type=pathlib.Path, help='Override the built-in System WebKit dependency identity')
     parser.add_argument('--mpack', type=pathlib.Path)
     parser.add_argument('--msign', type=pathlib.Path)
     parser.add_argument('--identity')
@@ -207,8 +207,10 @@ def main():
         parser.error('--sdk is required to compile; --binary accepts an already-built ELF')
     if args.command == 'package' and args.mpack is None:
         parser.error('--mpack is required for package generation')
-    if args.webkit_prefix and (args.shared_sdk is None or args.engine_dependency is None):
-        parser.error('--webkit-prefix requires --shared-sdk and --engine-dependency')
+    if args.webkit_prefix and args.shared_sdk is None:
+        parser.error('--webkit-prefix requires --shared-sdk')
+    if args.webkit_prefix and args.engine_dependency is None:
+        args.engine_dependency = ROOT / 'resources/webkit-dependency.toml'
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
     binary = args.binary.resolve() if args.binary else build(args.sdk.resolve(), args.output, args.shared_sdk.resolve() if args.shared_sdk else None, args.webkit_prefix.resolve() if args.webkit_prefix else None)
     product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None, engine_linked=bool(args.webkit_prefix), dependency=engine_dependency(args.engine_dependency) if args.engine_dependency else None)

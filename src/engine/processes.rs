@@ -184,7 +184,7 @@ impl Helpers {
             .arg(IPC_FD.to_string())
             .env_clear()
             .env("LANG", "C.UTF-8")
-            .env("LD_LIBRARY_PATH", "/libraries/org.mochios.webkit");
+            .env("LD_LIBRARY_PATH", "/system/libraries:/system/libraries/webkit");
         command.inherit_fd(socket.as_fd(), IPC_FD)?;
         self.registry.insert(command.spawn()?)
     }

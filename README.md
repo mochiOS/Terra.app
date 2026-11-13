@@ -164,15 +164,14 @@ A published, signed release and working OS network are needed for a real downloa
 WebKit source acquisition and builds are owned by [mochiOS/libs](https://github.com/mochiOS/libs).
 See [vendor/README.md](vendor/README.md). Terra does not invoke the OS build
 system or fetch an engine source tree. The native adapter is implemented, but the independently installed engine package,
-helper Capability declarations and mochiOS runtime validation are still required.
+System image integration and mochiOS runtime validation are still required.
 
 A native engine build uses an independently installed prefix and shared SDK:
 
 ```sh
 python3 tools/build.py build --sdk /path/to/rust-sdk/share/app-build.json \
   --webkit-prefix /path/to/verified-engine-prefix \
-  --shared-sdk /path/to/shared-cxx-sdk \
-  --engine-dependency /path/to/reviewed-engine-identity.toml
+  --shared-sdk /path/to/shared-cxx-sdk
 ```
 
 The identity file contains the five existing `library_dependency` fields:
@@ -191,7 +190,7 @@ publisher/key/provenance/ABI. Their exports are `web-process` and
 `network-process`. Process creation uses AppCore signed executable references;
 there is no `PATH` fallback. The engine worker delegates the socket as FD 3,
 retains native Child handles, reaps exits, and stops owned helpers at shutdown.
-Private engine DSOs use `/libraries/org.mochios.webkit`. Shell builds retain
+The public engine is `/system/libraries/libwebkit.so.1`; private engine DSOs and helpers use `/system/libraries/webkit/`. Shell builds retain
 their original capability requirements. The engine-linked parent's capability
 ceiling includes network/tmp/time/random needed by its declared helper subsets;
 the Web helper itself receives no `net.connect` capability.
@@ -202,3 +201,12 @@ helper spawning. The complete updated engine and final Terra link must be built
 before testing `terra:///engine-check`; a successful headless IPC fixture does
 not establish HTML rendering. Fonts and other non-code runtime assets still
 require reviewed delegation before production distribution.
+
+WebKit is an immutable System component updated with the OS. AppStore distributes
+Terra, which uses the built-in dependency identity in
+`resources/webkit-dependency.toml` by default. This is the existing System-image
+verification identity, not a separately invented publisher or signing key.
+`--engine-dependency` explicitly overrides that identity for reviewed alternate
+builds. The child library search path contains `/system/libraries` and
+`/system/libraries/webkit`; code selection still uses signed executable references.
+Installing Terra does not install, replace, or mutate System WebKit.
