@@ -662,7 +662,7 @@ impl BrowserView {
             .height(Theme::current().layout.top_bar_height.max(40.0))
             .background(RectangleColor::SubtleSurface)
             .separator(true)
-            .center(drag_region(BrowserTitleBar(self.clone())))
+            .center(drag_region(BrowserTitleBar(self.clone())).including_controls())
     }
     fn navigation(&self, width: f32, theme: &Theme) -> Padding<HStack> {
         let b = self.core.browser.borrow();
@@ -680,15 +680,7 @@ impl BrowserView {
             .document
             .as_ref()
             .is_some_and(|d| b.bookmarks.iter().any(|e| e.url == d.url));
-        // Keep a full-height grip inside the resize border. Tabs consume their
-        // own pointer gestures, so a thin outer inset cannot serve as a grip.
-        Padding::only(
-            0.0,
-            theme.spacing.small,
-            0.0,
-            theme.controls.small_height + theme.spacing.small,
-        )
-        .content(
+        Padding::symmetric(theme.spacing.small, 0.0).content(
             HStack::new()
                 .alignment(StackAlignment::Center)
                 .gap(StackGap::Small)
@@ -1395,13 +1387,17 @@ mod tests {
         fn paint(&self, b: Rect, c: &mut PaintContext<'_>) {
             let (caption, body) = self.frames(b, c.theme);
             self.0.paint(body, c);
-            drag_region(BrowserTitleBar(self.0.clone())).paint(caption, c);
+            drag_region(BrowserTitleBar(self.0.clone()))
+                .including_controls()
+                .paint(caption, c);
         }
         fn handle_event(&self, b: Rect, e: &ViewEvent, c: &mut EventContext<'_>) -> EventResult {
             let (caption, body) = self.frames(b, c.theme());
             let mut result = EventResult::Ignored;
             if e.requires_broadcast() || e.position().is_none_or(|p| caption.contains(p)) {
-                result = drag_region(BrowserTitleBar(self.0.clone())).handle_event(caption, e, c);
+                result = drag_region(BrowserTitleBar(self.0.clone()))
+                    .including_controls()
+                    .handle_event(caption, e, c);
             }
             if result.is_consumed() && !e.requires_broadcast() {
                 return result;
@@ -1451,49 +1447,6 @@ mod tests {
         snapshot(v, Rect::new(0., 0., 1000., 700.), &Theme::LIGHT);
         (tab, navigation)
     }
-    #[test]
-    fn caption_keeps_a_full_height_drag_grip_outside_tabs_and_resize_edges() {
-        for theme in [Theme::LIGHT, Theme::DARK] {
-            for width in [320.0, 800.0, 1100.0] {
-                let v = BrowserView::new(Box::new(crate::engine::Unavailable));
-                for editing in [false, true] {
-                    v.core.editing_address.set(editing);
-                    let bounds = Rect::new(0.0, 0.0, width, 480.0);
-                    let (_, nodes) = snapshot(&v, bounds, &theme);
-                    let (caption, _) = window(&v).frames(bounds, &theme);
-                    let point = Point::new(
-                        theme.controls.small_height * 0.5,
-                        caption.origin.y + caption.size.height * 0.5,
-                    );
-                    // Binder's inner resize band occupies the first five pixels.
-                    assert!(point.x > 5.0 && point.y > 5.0);
-                    assert!(!nodes.iter().any(|node| matches!(
-                        node.role,
-                        AccessibilityRole::Button
-                            | AccessibilityRole::Tab
-                            | AccessibilityRole::TextField
-                    ) && node.bounds.contains(point)));
-                    let mut text = TextMeasurer::new();
-                    let mut cx = EventContext::new(&theme, &theme.typography, &mut text);
-                    // The child must leave this actual press for DragRegion;
-                    // merely having blank pixels is insufficient.
-                    assert!(
-                        !BrowserTitleBar(v.clone())
-                            .handle_event(
-                                caption,
-                                &ViewEvent::PointerPressed {
-                                    position: point,
-                                    button: PointerButton::Primary
-                                },
-                                &mut cx
-                            )
-                            .is_consumed()
-                    );
-                }
-            }
-        }
-    }
-
     #[test]
     fn integrated_caption_owns_tabs_and_new_tab_runs_once() {
         let v = BrowserView::new(Box::new(crate::engine::Unavailable));
@@ -1951,7 +1904,7 @@ mod tests {
                     let last = buttons.last().unwrap();
                     let custom_right = width - 112.0;
                     let right = custom_right - last.origin.x - last.size.width;
-                    assert!((left - right - theme.controls.small_height).abs() < 0.1);
+                    assert!((left - right).abs() < 0.1);
                     assert!(left >= theme.spacing.small);
                     assert!(tabs.size.width > 0.0);
                     for button in &buttons {
