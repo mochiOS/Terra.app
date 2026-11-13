@@ -94,7 +94,11 @@ def build(sdk_file, output, shared_sdk=None, webkit_prefix=None):
     shutil.copy2(ROOT / 'Cargo.lock', staging / 'Cargo.lock')
     env = os.environ.copy()
     env.update(sdk.get('versions', {})); env.update(sdk['fonts'])
-    flags = engine_rustflags(sdk, shared_sdk, webkit_prefix) if webkit_prefix else sdk['rustflags']
+    flags = list(engine_rustflags(sdk, shared_sdk, webkit_prefix) if webkit_prefix else sdk['rustflags'])
+    # Panic locations retain registry paths even when debug sections are stripped.
+    # Resolve Cargo's actual cache independently of the caller's SDK location.
+    cargo_home = pathlib.Path(os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))).expanduser().resolve()
+    flags += ['--remap-path-prefix', str(cargo_home) + '=/build/cargo']
     env.update(RUSTC=sdk['rustc'], RUSTDOC=sdk['rustdoc'], CARGO_ENCODED_RUSTFLAGS='\x1f'.join(flags))
     env.pop('RUSTFLAGS', None)
     args = [sdk['cargo'], 'build', '--offline', '-Z', 'build-std=std,panic_abort,compiler_builtins', '-Z', 'json-target-spec']
