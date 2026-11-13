@@ -1,3 +1,4 @@
+#![cfg_attr(all(feature = "engine-probe", target_os = "mochios"), feature(alloc_error_hook))]
 mod browser;
 mod engine;
 mod store;

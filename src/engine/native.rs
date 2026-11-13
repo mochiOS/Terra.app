@@ -970,6 +970,18 @@ mod worker_tests {
 }
 
 #[cfg(feature = "engine-probe")]
+static PROBE_FAULT_LOG: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+#[cfg(all(feature = "engine-probe", target_os = "mochios"))]
+fn probe_allocation_failure(layout: std::alloc::Layout) {
+    use std::io::Write;
+    if let Some(file) = PROBE_FAULT_LOG.get() {
+        let mut output = file;
+        let _ = writeln!(output, "ALLOCATION FAILURE size={} align={}", layout.size(), layout.align());
+    }
+}
+
+#[cfg(feature = "engine-probe")]
 pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
     use std::io::Write;
     let mut log = std::fs::OpenOptions::new()
@@ -978,6 +990,17 @@ pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
         .open("/tmp/terra-engine-results.log")
         .map_err(|e| e.to_string())?;
     writeln!(log, "TERRA-ENGINE BEGIN").map_err(|e| e.to_string())?;
+    let faults = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open("/tmp/terra-engine-faults.log").map_err(|e| e.to_string())?;
+    PROBE_FAULT_LOG.set(faults).map_err(|_| "Probe fault logger already installed")?;
+    std::panic::set_hook(Box::new(|info| {
+        if let Some(file) = PROBE_FAULT_LOG.get() {
+            let mut output = file;
+            let _ = writeln!(output, "PANIC {info}");
+        }
+    }));
+    #[cfg(target_os = "mochios")]
+    std::alloc::set_alloc_error_hook(probe_allocation_failure);
     use std::os::fd::AsRawFd;
     let stderr = std::fs::OpenOptions::new()
         .write(true).create_new(true).open("/tmp/terra-engine-stderr.log")

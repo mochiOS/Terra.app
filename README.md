@@ -279,3 +279,10 @@ reported and all owned helpers to stop before writing its final success line.
 The private System library stage must match `build/system-libraries.toml`;
 this harness never substitutes a different engine or grants broad filesystem
 access to Terra.
+
+The opt-in probe writes Rust panic and allocation-failure details to
+`/tmp/terra-engine-faults.log`, in addition to the C/C++ stderr log. Allocation
+failure observation uses a nightly-only hook exclusively in the native test
+feature. Normal Terra does not install these hooks. The private OS fixture also
+provides the ordinary root-owned diagnostics directory for existing local
+termination reports; these records are not transmitted.
