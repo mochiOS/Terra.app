@@ -61,6 +61,9 @@ def stage(probe, output, msign, *, manual=False):
                     str(output), '--output', str(package / 'manifest.toml')], check=True)
     subprocess.run([str(msign), 'package', 'built-in-record', str(package / 'manifest.toml'),
                     '--output', str(package / 'verification.bin')], check=True)
+    # Workspace discovers normal applications through their bundle manifest.
+    # Reuse the bound identity; executable authority remains the verified record.
+    shutil.copy2(package / 'manifest.toml', bundle / 'manifest.toml')
     source.unlink()
     if not manual:
         resources = output / 'system/resources'
