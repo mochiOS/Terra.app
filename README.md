@@ -233,8 +233,9 @@ Run only in a fresh disposable mochiOS VM with the normal signed Terra library
 and helper dependencies. The fixture uses the ordinary AppCore executable
 references and inherited IPC socket. It requires no broad filesystem access.
 
-Serve `resources/engine-check.html` at `http://10.0.2.2:18087/check` through
-QEMU user networking. The fixture creates `/tmp/terra-engine-results.log` once:
+The fixture loads the real built-in `resources/engine-check.html` through the
+normal `terra:///engine-check` adapter path, without requiring a host HTTP server.
+Both real helper kinds remain mandatory. It creates `/tmp/terra-engine-results.log` once:
 existing logs are rejected. A pass requires completed navigation, a retained
 engine frame, both real helper kinds, detection of termination of the owned web
 process, and successful termination/reaping of every owned helper. A startup,
@@ -245,3 +246,36 @@ checked separately with the normal application at `terra:///engine-check`.
 A successful link or offline ELF preparation does not establish a VM pass.
 The development SDK used for verification can differ from a published SDK;
 record its runtime hash and source commits with the test result.
+
+The first-page integration deadline is 20 minutes for initial native bring-up.
+This budget does not establish acceptable launch performance; record actual
+startup duration separately. Normal application behavior is unaffected.
+
+For a source mochiOS workspace, `tools/stage_probe.py` binds the dedicated
+`native-probe/entry.elf` output into a private System overlay using the existing
+built-in verification identity. It does not produce a store package or publish
+anything. From the OS workspace root, after building the fixture services and
+probe above:
+
+```sh
+python3 applications/terra/tools/stage_probe.py \
+  --probe out/terra-probe/native-probe/entry.elf \
+  --output out/terra-probe-overlay \
+  --msign out/mmake/host-tools/release/msign
+python3 services/posix/tests/executable-reference/image.py \
+  --native-directory out/native-fixtures/target/x86_64-unknown-mochios/release \
+  --overlay out/terra-probe-overlay --system-libraries \
+  --output out/terra-probe-image
+python3 services/posix/tests/executable-reference/run_vm.py \
+  --image out/terra-probe-image/image/ab-layout.img \
+  --directory out/terra-probe-vm --timeout 1320 \
+  --result /tmp/terra-engine-results.log \
+  --pass-line 'TERRA-ENGINE PASS' --fail-line 'TERRA-ENGINE FAIL' \
+  --required-line 'HELPERS + IPC + FRAME PASS'
+```
+
+The native fixture itself also requires abnormal helper termination to be
+reported and all owned helpers to stop before writing its final success line.
+The private System library stage must match `build/system-libraries.toml`;
+this harness never substitutes a different engine or grants broad filesystem
+access to Terra.

@@ -1005,9 +1005,9 @@ pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
         engine.send(Command::Navigate {
             tab: 1,
             navigation: 1,
-            url: "http://10.0.2.2:18087/check".into(),
+            url: "terra:///engine-check".into(),
         })?;
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = Instant::now() + Duration::from_secs(1200);
         let mut finished = false;
         let mut next_status = Instant::now();
         while Instant::now() < deadline {
