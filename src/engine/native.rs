@@ -1072,13 +1072,26 @@ pub(super) fn run_probe(api: &'static Api) -> Result<(), String> {
         while Instant::now() < deadline {
             if Instant::now() >= next_status {
                 writeln!(log, "STATE phase={} web={} network={} live={}", diagnostics.phase.load(Ordering::Acquire), diagnostics.web.load(Ordering::Acquire), diagnostics.network.load(Ordering::Acquire), diagnostics.live.load(Ordering::Acquire)).map_err(|e| e.to_string())?;
+                let open_fds = (0..256)
+                    .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } >= 0)
+                    .count();
+                writeln!(log, "FD COUNT {open_fds}").map_err(|e| e.to_string())?;
                 next_status = Instant::now() + Duration::from_secs(10);
             }
             while let Some(event) = engine.poll() {
                 writeln!(log, "{event:?}").map_err(|e| e.to_string())?;
                 match event {
                     Event::Finished { navigation: 1, .. } => finished = true,
-                    Event::Failed { message, .. } => return Err(message),
+                    Event::Failed { message, .. } => {
+                        // Inspect before dropping the engine and closing its FDs.
+                        // This is confined to the disposable native probe.
+                        let descriptors: Vec<_> = (0..256)
+                            .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } >= 0)
+                            .collect();
+                        writeln!(log, "FD INVENTORY before cleanup: {descriptors:?}")
+                            .map_err(|e| e.to_string())?;
+                        return Err(message);
+                    }
                     _ => {}
                 }
             }
