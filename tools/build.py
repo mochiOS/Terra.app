@@ -117,7 +117,7 @@ def build(sdk_file, output, shared_sdk=None, webkit_prefix=None, *, engine_probe
     return binary
 
 
-def stage(binary, output, engine=None, *, engine_linked=False, dependency=None):
+def stage(binary, output, engine=None, *, engine_linked=False, dependency=None, font_licenses=None):
     """Produce real bundle/payload files and a digest-bound install manifest."""
     elf(binary)
     if engine is not None:
@@ -138,6 +138,16 @@ def stage(binary, output, engine=None, *, engine_linked=False, dependency=None):
     (bundle / 'entry.elf').chmod(0o755)
     (bundle / 'appicon.png').chmod(0o644)
     inputs = [('$/entry.elf', bundle / 'entry.elf', '0755'), ('$/appicon.png', bundle / 'appicon.png', '0644')]
+    if font_licenses is not None:
+        if not font_licenses.is_dir():
+            raise ValueError('Font license directory is missing')
+        for source in sorted(font_licenses.rglob('*')):
+            if source.is_file():
+                target = bundle / 'licenses/fonts' / source.relative_to(font_licenses)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                target.chmod(0o644)
+                inputs.append(('$/'+target.relative_to(bundle).as_posix(), target, '0644'))
     config = tomllib.loads((ROOT / 'manifest.toml').read_text())
     package = config['package']; app = config['application']
     text = 'format = 1\n\n[package]\n'
@@ -207,6 +217,7 @@ def main():
     parser.add_argument('--mpack', type=pathlib.Path)
     parser.add_argument('--msign', type=pathlib.Path)
     parser.add_argument('--identity')
+    parser.add_argument('--font-licenses', type=pathlib.Path, help='Include the original SDK font licenses in the bundle')
     args = parser.parse_args()
     if args.engine_probe and (args.command != 'build' or not args.webkit_prefix or args.binary is not None):
         parser.error('--engine-probe requires build --webkit-prefix and cannot package or reuse a binary')
@@ -226,7 +237,7 @@ def main():
         shutil.copy2(binary, destination / 'entry.elf')
         print(destination / 'entry.elf')
         return
-    product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None, engine_linked=bool(args.webkit_prefix), dependency=engine_dependency(args.engine_dependency) if args.engine_dependency else None)
+    product = stage(binary, args.output, args.engine_prefix.resolve() if args.engine_prefix else None, engine_linked=bool(args.webkit_prefix), dependency=engine_dependency(args.engine_dependency) if args.engine_dependency else None, font_licenses=args.font_licenses)
     if args.command == 'package':
         package(product, args.output, args.mpack.resolve(), args.msign.resolve() if args.msign else None, args.identity)
     print(product)

@@ -1,0 +1,8 @@
+format = 1
+
+[build]
+command = ["mdp", "pipeline", "--recipe", "mdp.recipe.json"]
+requires = ["sdk-context", "system-components"]
+sdk_context = true
+sources = []
+artifact = "out/mdp/app-terra.tar.mdp"

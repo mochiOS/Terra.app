@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "steps": [
+    "python3 $(ROOT)/tools/devkit/build-support/terra.py --source $(PROJECT)"
+  ],
+  "package": {
+    "name": "app-terra",
+    "version": "0.1.0",
+    "target": "x86_64-mochios",
+    "abi": "mochios-1"
+  },
+  "artifact": "out/mdp/app-terra.tar.mdp",
+  "exports": [
+    {
+      "source": "out/mdp/application/application.mpkg",
+      "area": "applications",
+      "destination": "terra.mpkg"
+    }
+  ],
+  "metadata": {
+    "application": {
+      "source": "terra",
+      "mpkg": "terra.mpkg"
+    }
+  }
+}
